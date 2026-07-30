@@ -1,0 +1,17 @@
+# 打包产物
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# 开发过程截图与中间素材（程序运行只需要 cat_soft.png）
+screen_*.png
+preview_*.png
+v2_*.png
+anim_*.png
+cat.jpg
+cat.png
+cat_flip.png
+cat_cutout_full.png
