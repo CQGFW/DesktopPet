@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""pet_v2 offscreen 自测：分层还原、无待机平移、呼吸、头部跟随、减少动态效果、V1 回归"""
+"""pet_v2 offscreen 自测：分层还原、无待机平移、呼吸、头部跟随、减少动态效果、闲置提醒、V1 回归"""
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import math
@@ -152,6 +152,30 @@ assert p.scale > s0, "wheel up should zoom in"
 wheel(0, -120)
 assert abs(p.scale - s0) < 1e-9, "wheel down should zoom out"
 print("wheel: vertical zooms, horizontal-only ignored OK")
+
+# ---------- 闲置提醒：到时自动弹语录并重新计时，互动重置 ----------
+assert p.idle_timer.isActive() and p.idle_timer.isSingleShot(), "idle timer runs from startup"
+assert m.IDLE_MIN_MS <= p.idle_timer.interval() <= m.IDLE_MAX_MS, p.idle_timer.interval()
+p.bubble.hide()
+p._idle_chatter()
+assert p.bubble.isVisible() and p.bubble.text in m.QUOTES, "idle pops a quote from QUOTES"
+assert p.idle_timer.isActive(), "idle chatter must reschedule itself"
+p.bubble.hide()
+p.dragging = True
+p._idle_chatter()
+assert not p.bubble.isVisible(), "no idle bubble while dragging"
+assert p.idle_timer.isActive(), "must keep rescheduling while dragging"
+p.dragging = False
+p.idle_timer.stop()
+wheel(0, 120)               # 任一互动都应重启计时（这里用滚轮验证）
+assert p.idle_timer.isActive(), "interaction must restart idle timer"
+wheel(0, -120)              # 恢复缩放，避免影响后续用例
+prev = p._pick_quote()
+for _ in range(40):
+    q = p._pick_quote()
+    assert q in m.QUOTES and q != prev, "random quote must not repeat back-to-back"
+    prev = q
+print("idle chatter: auto quote, reschedule, interaction reset, no back-to-back repeat OK")
 
 # ---------- 气泡按宠物当前所在屏幕定位 ----------
 from PySide6.QtCore import QRect

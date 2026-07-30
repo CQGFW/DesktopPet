@@ -7,7 +7,9 @@
   亚像素浮点绘制，循环平滑、无位置漂移；
 - 新增头部跟随：鼠标悬停在猫咪身上时，头部绕颈部转轴朝鼠标方向平滑转动
   （限制最大角度），鼠标移出后平滑回正；
-- 系统开启"减少动态效果"时，自动关闭呼吸 / 头部跟随 / 点击动画（气泡保留）。
+- 系统开启"减少动态效果"时，自动关闭呼吸 / 头部跟随 / 点击动画（气泡保留）；
+- 新增闲置提醒：一段时间未与宠物互动（点击 / 拖拽 / 悬停 / 滚轮 / 右键）时，
+  自动从语录里随机弹一条气泡，互动后重新计时。
 
 其余与 V1 相同：点击弹语录气泡并轮流触发互动动画（跳跃 → 压扁回弹 → 左右
 抖动）、拖拽、滚轮缩放（25%~150%，脚底不动）、右键菜单退出。"""
@@ -49,6 +51,10 @@ HEAD_BAND_X, HEAD_BAND_Y = 0.08, 0.08   # 左 / 下羽化过渡带宽度（原�
 ERASE_MX, ERASE_MY = 0.07, 0.06         # 抠空区边缘的渐变余量：转头后由静态皮毛补位
 
 SPI_GETCLIENTAREAANIMATION = 0x1042
+
+# 闲置提醒：距上次互动超过随机间隔时自动弹一条语录；间隔每次在区间内随机取值
+IDLE_MIN_MS = 90_000
+IDLE_MAX_MS = 180_000
 
 QUOTES = [
     "喵~ 今天也要加油鸭！",
@@ -177,9 +183,16 @@ class Pet(QWidget):
         self._apply_geometry(scr.center().x(), scr.bottom() + 1)
 
         self.bubble = Bubble()
+        self.last_quote = None    # 上一条语录，随机时避免连续重复
 
         self.menu = QMenu()
         self.menu.addAction("退出", QApplication.quit)
+
+        # 闲置提醒：超时无互动自动弹语录；任何互动（含悬停）重置计时
+        self.idle_timer = QTimer(self)
+        self.idle_timer.setSingleShot(True)
+        self.idle_timer.timeout.connect(self._idle_chatter)
+        self._reset_idle_timer()
 
         # 动画帧驱动（呼吸 + 头部角度平滑）；减少动态效果时自动静默
         self.frame_timer = QTimer(self)
@@ -397,12 +410,14 @@ class Pet(QWidget):
 
     # ---------- 互动 ----------
     def mousePressEvent(self, e):
+        self._reset_idle_timer()
         if e.button() == Qt.LeftButton:
             self.dragging = True
             self._press_pos = e.globalPosition().toPoint()
             self.drag_offset = self._press_pos - self.pos()
 
     def mouseMoveEvent(self, e):
+        self._reset_idle_timer()
         self.hover_pos = e.position().toPoint()
         if self.dragging:
             self.move(e.globalPosition().toPoint() - self.drag_offset)
@@ -413,7 +428,7 @@ class Pet(QWidget):
             # 位移很小视为点击 → 弹气泡 + 轮流触发互动动画
             if self._press_pos is not None and \
                (e.globalPosition().toPoint() - self._press_pos).manhattanLength() < 6:
-                self.say(random.choice(QUOTES))
+                self.say(self._pick_quote())
                 self.play_anim()
             self._press_pos = None
 
@@ -421,6 +436,7 @@ class Pet(QWidget):
         self.hover_pos = None   # 头部由 _frame 平滑回正
 
     def contextMenuEvent(self, e):
+        self._reset_idle_timer()
         self.menu.exec(e.globalPos())
 
     def _current_screen_rect(self):
@@ -438,8 +454,26 @@ class Pet(QWidget):
         anchor_y = head_y - 6 if above else self.y() + self.height() + 6
         self.bubble.popup(text, anchor_x, anchor_y, above, self.screen_rect)
 
+    # ---------- 语录 / 闲置提醒 ----------
+    def _pick_quote(self):
+        """随机选一条语录，避免与上一条重复。"""
+        q = random.choice([x for x in QUOTES if x != self.last_quote] or QUOTES)
+        self.last_quote = q
+        return q
+
+    def _reset_idle_timer(self):
+        """互动后重新计时；下次闲置提醒的间隔在区间内随机取值。"""
+        self.idle_timer.start(random.randint(IDLE_MIN_MS, IDLE_MAX_MS))
+
+    def _idle_chatter(self):
+        """闲置到时：弹一条随机语录（拖拽中跳过），并继续计时等下一次。"""
+        if not self.dragging:
+            self.say(self._pick_quote())
+        self._reset_idle_timer()
+
     # ---------- 滚轮缩放：脚底位置不动 ----------
     def wheelEvent(self, e):
+        self._reset_idle_timer()
         dy = e.angleDelta().y()
         if dy == 0:   # 纯横向滚动（触控板/倾斜滚轮）不缩放
             return
