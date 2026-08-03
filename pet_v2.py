@@ -9,7 +9,11 @@
   （限制最大角度），鼠标移出后平滑回正；
 - 系统开启"减少动态效果"时，自动关闭呼吸 / 头部跟随 / 点击动画（气泡保留）；
 - 新增闲置提醒：一段时间未与宠物互动（点击 / 拖拽 / 悬停 / 滚轮 / 右键）时，
-  自动从语录里随机弹一条气泡，互动后重新计时。
+  自动从语录里随机弹一条气泡，互动后重新计时；
+- 右键菜单新增"始终置顶"开关（默认开启）；
+- 右键菜单新增"自动走动"开关（默认关闭）：开启后宠物在当前屏幕右下 1/4
+  区域内随机游走（匀速走向随机目标点，到达后停留数秒再选下一个），
+  拖拽 / 菜单打开 / 减少动态效果时暂停。
 
 其余与 V1 相同：点击弹语录气泡并轮流触发互动动画（跳跃 → 压扁回弹 → 左右
 抖动）、拖拽、滚轮缩放（25%~150%，脚底不动）、右键菜单退出。"""
@@ -55,6 +59,12 @@ SPI_GETCLIENTAREAANIMATION = 0x1042
 # 闲置提醒：距上次互动超过随机间隔时自动弹一条语录；间隔每次在区间内随机取值
 IDLE_MIN_MS = 90_000
 IDLE_MAX_MS = 180_000
+
+# 自动走动：限定在当前屏幕可用区域的右下 1/4；匀速走向随机目标，到达后停留
+WALK_TICK_MS = 33
+WALK_SPEED = 60                 # 像素/秒
+WALK_PAUSE_MIN_MS = 2_000       # 到达目标后停留时长的随机区间
+WALK_PAUSE_MAX_MS = 6_000
 
 QUOTES = [
     "喵~ 今天也要加油鸭！",
@@ -152,6 +162,7 @@ class Pet(QWidget):
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)   # 重新显示时不抢占焦点
         self.setMouseTracking(True)   # 无按键悬停也接收 mouseMove，用于头部跟随
 
         self.src = QPixmap(resource_path("cat_soft.png"))   # 高清羽化素材
@@ -186,7 +197,28 @@ class Pet(QWidget):
         self.last_quote = None    # 上一条语录，随机时避免连续重复
 
         self.menu = QMenu()
+        self.act_topmost = self.menu.addAction("始终置顶")
+        self.act_topmost.setCheckable(True)
+        self.act_topmost.setChecked(True)
+        self.act_topmost.toggled.connect(self._set_topmost)
+        self.act_walk = self.menu.addAction("自动走动")
+        self.act_walk.setCheckable(True)
+        self.act_walk.setChecked(False)
+        self.act_walk.toggled.connect(self._set_walk)
+        self.menu.addSeparator()
         self.menu.addAction("退出", QApplication.quit)
+
+        # 自动走动状态：目标点为脚底中心的屏幕坐标，None 表示正在停留；
+        # _walk_pos 为浮点脚底位置（避免逐帧取整累计出速度/方向量化误差）
+        self.walk_enabled = False
+        self.walk_target = None
+        self._walk_pos = None
+        self.walk_timer = QTimer(self)
+        self.walk_timer.setInterval(WALK_TICK_MS)
+        self.walk_timer.timeout.connect(self._walk_tick)
+        self.walk_pause_timer = QTimer(self)
+        self.walk_pause_timer.setSingleShot(True)
+        self.walk_pause_timer.timeout.connect(self._on_walk_pause_done)
 
         # 闲置提醒：超时无互动自动弹语录；任何互动（含悬停）重置计时
         self.idle_timer = QTimer(self)
@@ -285,6 +317,108 @@ class Pet(QWidget):
         self.scale = new_scale
         self._rebuild_pixmap()
         self._apply_geometry(foot_x, foot_y)
+        # 窗口尺寸变了：走动目标重新收进区域，浮点脚底下一帧从实际几何重建
+        if self.walk_target is not None:
+            fx, fy = self._clamp_foot(self.walk_target.x(), self.walk_target.y())
+            self.walk_target = QPoint(fx, fy)
+        self._walk_pos = None
+
+    # ---------- 置顶开关 ----------
+    def _set_topmost(self, on):
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        # 气泡置顶状态随宠物同步，避免宠物被遮住时气泡还单独浮在最上层
+        bubble_visible = self.bubble.isVisible()
+        self.bubble.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        if bubble_visible:
+            self.bubble.show()
+        # 修改窗口标志会隐藏并重建原生窗口；延后到菜单的嵌套事件循环结束后
+        # 再重新显示，配合 WA_ShowWithoutActivating 避免闪烁 / 抢占前台焦点
+        QTimer.singleShot(0, self.show)
+
+    # ---------- 自动走动 ----------
+    def _walk_region(self):
+        """走动限定区域：宠物当前所在屏幕可用区域的右下 1/4。"""
+        scr = self._current_screen_rect()
+        return QRect(scr.center(), scr.bottomRight())
+
+    def _foot_bounds(self):
+        """脚底中心点在走动区域内的合法区间 (lo_x, hi_x, lo_y, hi_y)：
+        向内收缩半个窗口宽 / 整个窗口高，保证窗口整体不越出区域。"""
+        r = self._walk_region()
+        lo_x, hi_x = r.left() + self.width() // 2, r.right() - self.width() // 2
+        lo_y, hi_y = r.top() + self.height(), r.bottom()
+        if lo_x > hi_x:     # 区域比窗口还窄 / 矮时退化为贴中线 / 贴底
+            lo_x = hi_x = r.center().x()   # （此时窗口不可避免会伸出区域）
+        if lo_y > hi_y:
+            lo_y = hi_y = r.bottom()
+        return lo_x, hi_x, lo_y, hi_y
+
+    def _clamp_foot(self, fx, fy):
+        """把脚底中心点收进走动区域的合法区间。"""
+        lo_x, hi_x, lo_y, hi_y = self._foot_bounds()
+        return max(lo_x, min(fx, hi_x)), max(lo_y, min(fy, hi_y))
+
+    def _walk_paused(self):
+        """走动的临时暂停条件：拖拽 / 右键菜单打开 / 气泡显示中 / 减少动态效果。"""
+        return (self.dragging or self.reduced_motion
+                or self.menu.isVisible() or self.bubble.isVisible())
+
+    def _pick_walk_target(self):
+        """在合法区间内均匀随机选下一个脚底目标点（不经 clamp，避免边缘聚集）。"""
+        lo_x, hi_x, lo_y, hi_y = self._foot_bounds()
+        self.walk_target = QPoint(random.randint(lo_x, hi_x),
+                                  random.randint(lo_y, hi_y))
+        self._walk_pos = None   # 下一 tick 从当前窗口位置重新起步
+
+    def _on_walk_pause_done(self):
+        """停留结束：若正处于暂停态则不选新目标（相当于冻结停留），
+        恢复后由 _walk_tick 兜底重新计时。"""
+        if self.walk_enabled and not self._walk_paused():
+            self._pick_walk_target()
+
+    def _set_walk(self, on):
+        self.walk_enabled = on
+        if on:
+            self._pick_walk_target()
+            self.walk_timer.start()
+        else:
+            self.walk_timer.stop()
+            self.walk_pause_timer.stop()
+            self.walk_target = None
+            self._walk_pos = None
+
+    def _restart_walk_pause(self):
+        self.walk_pause_timer.start(
+            random.randint(WALK_PAUSE_MIN_MS, WALK_PAUSE_MAX_MS))
+
+    def _walk_tick(self):
+        """每帧向目标匀速走一步；浮点累计位置，move 时才取整。"""
+        if self._walk_paused():
+            return
+        if self.walk_target is None:
+            # 停留计时被暂停冻结 / 外部打断后兜底重新排期
+            if not self.walk_pause_timer.isActive():
+                self._restart_walk_pause()
+            return
+        if self._walk_pos is None:
+            self._walk_pos = (float(self.x() + self.width() // 2),
+                              float(self.y() + self.height()))
+        fx, fy = self._walk_pos
+        dx = self.walk_target.x() - fx
+        dy = self.walk_target.y() - fy
+        dist = math.hypot(dx, dy)
+        step = WALK_SPEED * WALK_TICK_MS / 1000.0
+        if dist <= step:    # 到达：吸附到目标点并停留一会儿
+            nx, ny = self.walk_target.x(), self.walk_target.y()
+            self.walk_target = None
+            self._walk_pos = None
+            self._restart_walk_pause()
+        else:
+            fx += dx / dist * step
+            fy += dy / dist * step
+            self._walk_pos = (fx, fy)
+            nx, ny = round(fx), round(fy)
+        self.move(nx - self.width() // 2, ny - self.height())
 
     # ---------- 呼吸 / 头部跟随 ----------
     def _breath_scales(self, t):
@@ -425,6 +559,11 @@ class Pet(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.dragging = False
+            # 拖拽可能把宠物拖去别的屏幕 / 区域外：丢弃旧目标，停留后按当前屏幕重选
+            if self.walk_enabled:
+                self.walk_target = None
+                self._walk_pos = None
+                self._restart_walk_pause()
             # 位移很小视为点击 → 弹气泡 + 轮流触发互动动画
             if self._press_pos is not None and \
                (e.globalPosition().toPoint() - self._press_pos).manhattanLength() < 6:

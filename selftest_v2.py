@@ -235,4 +235,107 @@ for deg in (m.HEAD_MAX_DEG, -m.HEAD_MAX_DEG):
         assert -1 <= x <= p.width() + 1 and -1 <= y <= p.height() + 1, (deg, x, y)
 print("rotated head stays inside window at ±max angle OK")
 
+# ---------- 右键菜单：置顶 / 自动走动开关 + 退出 ----------
+labels = [a.text() for a in p.menu.actions() if a.text()]
+assert labels == ["始终置顶", "自动走动", "退出"], labels
+assert p.act_topmost.isChecked() and bool(p.windowFlags() & Qt.WindowStaysOnTopHint)
+p.act_topmost.setChecked(False)
+app.processEvents()     # show 延后到事件循环，先跑一轮
+assert not (p.windowFlags() & Qt.WindowStaysOnTopHint), "uncheck must drop topmost flag"
+assert not (p.bubble.windowFlags() & Qt.WindowStaysOnTopHint), "bubble must follow topmost state"
+assert p.isVisible(), "window must stay visible after flag change"
+p.act_topmost.setChecked(True)
+app.processEvents()
+assert p.windowFlags() & Qt.WindowStaysOnTopHint, "recheck must restore topmost flag"
+assert p.bubble.windowFlags() & Qt.WindowStaysOnTopHint
+assert p.isVisible()
+print("menu: topmost toggle updates pet+bubble flags, window stays visible OK")
+
+# ---------- 自动走动：默认关闭、区域=右下 1/4、目标限定、步进收敛 ----------
+p.bubble.hide()         # 气泡可见会暂停走动，先收起
+assert not p.walk_enabled and not p.walk_timer.isActive() and p.walk_target is None, \
+    "auto-walk must default to off"
+scr = p._current_screen_rect()
+region = p._walk_region()
+assert region.left() == scr.center().x() and region.top() == scr.center().y()
+assert region.right() == scr.right() and region.bottom() == scr.bottom()
+
+p.act_walk.setChecked(True)
+assert p.walk_enabled and p.walk_timer.isActive() and p.walk_target is not None, \
+    "enabling walk must start timer and pick a target"
+for _ in range(60):     # 随机目标点必须始终落在合法区间（窗口整体不出区域）
+    p._pick_walk_target()
+    t = p.walk_target
+    assert region.left() <= t.x() - p.width() // 2 and t.x() + p.width() // 2 <= region.right() + 1, t
+    assert region.top() <= t.y() - p.height() and t.y() <= region.bottom(), t
+
+# 从区域外（左上角）出发也要一步步走回区域内的目标点
+p.move(scr.left(), scr.top())
+p._pick_walk_target()
+target = QPoint(p.walk_target)
+step_limit = m.WALK_SPEED * m.WALK_TICK_MS / 1000.0 + 1.5   # 单步位移上限（含取整误差）
+prev = (p.x() + p.width() // 2, p.y() + p.height())
+for _ in range(5000):
+    p._walk_tick()
+    cur = (p.x() + p.width() // 2, p.y() + p.height())
+    assert math.hypot(cur[0] - prev[0], cur[1] - prev[1]) <= step_limit, "per-tick step too large"
+    prev = cur
+    if p.walk_target is None:
+        break
+assert p.walk_target is None, "must converge to target"
+assert prev == (target.x(), target.y()), (prev, target)
+assert p.walk_pause_timer.isActive(), "must pause before picking next target"
+print("walk: bottom-right quadrant only, uniform steps, converges and pauses OK")
+
+# 拖拽 / 气泡显示 / 减少动态效果时暂停走动
+p._pick_walk_target()
+p.walk_target = QPoint(region.center().x(), region.bottom())
+pos = (p.x(), p.y())
+p.dragging = True
+p._walk_tick()
+assert (p.x(), p.y()) == pos, "no walking while dragging"
+p.dragging = False
+p.reduced_motion = True
+p._walk_tick()
+assert (p.x(), p.y()) == pos, "no walking under reduced motion"
+p.reduced_motion = False
+p.bubble.show()
+p._walk_tick()
+assert (p.x(), p.y()) == pos, "no walking while bubble is visible"
+p.bubble.hide()
+
+# 停留计时在暂停态到期不选新目标（停留被冻结），恢复后才选
+p.walk_target = None
+p.dragging = True
+p._on_walk_pause_done()
+assert p.walk_target is None, "pause expiry while dragging must not pick a target"
+p.dragging = False
+p._on_walk_pause_done()
+assert p.walk_target is not None, "pause expiry when resumed must pick a target"
+
+# 拖拽结束：丢弃旧目标（可能已跨屏），停留后重选
+from PySide6.QtCore import QEvent, QPointF
+from PySide6.QtGui import QMouseEvent
+p._press_pos = QPoint(-10_000, -10_000)     # 位移够大，不触发点击路径
+p.dragging = True
+rel = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(5, 5),
+                  QPointF(p.x() + 5, p.y() + 5), Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+p.mouseReleaseEvent(rel)
+assert not p.dragging and p.walk_target is None and p._walk_pos is None, \
+    "drag release must drop stale walk target"
+assert p.walk_pause_timer.isActive(), "drag release must schedule a fresh pause"
+
+# 缩放会重新收拢目标点；关闭开关立即停止并清空状态
+p.walk_target = QPoint(scr.left() + 5, scr.top() + 5)   # 人为塞一个区域外目标
+p._set_scale(0.5)
+t = p.walk_target
+assert region.left() <= t.x() <= region.right() and region.top() <= t.y() <= region.bottom(), \
+    "zoom must re-clamp walk target into region"
+p._set_scale(1.0)
+p.act_walk.setChecked(False)
+assert not p.walk_enabled and not p.walk_timer.isActive()
+assert p.walk_target is None and p._walk_pos is None
+assert not p.walk_pause_timer.isActive(), "disable must stop pause timer"
+print("walk: paused by drag/bubble/reduced-motion, frozen stay, drag re-pick, clean disable OK")
+
 print("ALL PASS")
