@@ -72,6 +72,14 @@ LLKHF_EXTENDED = 0x01           # 扩展键位（如小键盘 Enter），参与�
 LLKHF_INJECTED = 0x10           # 软件合成按键（SendInput 等），不触发拍击
 KB_TAP_HOLD_MS = 90         # 脚掌压在键上的保持时长
 KB_TAP_LIFT_MS = 130        # 抬回悬停位的过渡时长
+# 脚掌图层（比例相对整张猫图）：从原图裁出两只前脚（边缘羽化），
+# 静止时原位叠回与原图逐像素重合；敲键时顶端固定、向下拉伸压到键盘上
+# （拉伸而非平移：身体不必抠空，也不会露出空缺）
+PAW_TOP = 0.74                          # 脚部图层上边界（含小腿，摊薄拉伸比例）
+PAW_SPANS = ((0.50, 0.69), (0.69, 0.86))    # 左 / 右脚的水平范围
+PAW_FEATHER_Y = 0.10                    # 上边羽化带（拉伸后与身体无缝衔接）
+PAW_FEATHER_X = 0.018                   # 左右羽化带
+PAW_PRESS_FRAC = 0.45                   # 下压幅度（相对键盘高度）
 # 左手区按键：ESC/Tab/Caps/左Shift/左Ctrl/Win/Alt、1~6、QWERT、ASDFG、ZXCVB
 LEFT_VKS = frozenset(
     [0x1B, 0x09, 0x14, 0xA0, 0xA2, 0x5B, 0xA4]
@@ -425,6 +433,35 @@ class Pet(QWidget):
         p.fillRect(0, core_y, head.width(), crop_h - core_y, gy)
         p.end()
 
+        # 脚掌图层：从原图裁出两只前脚并羽化边缘。静止时原位叠回与原图
+        # 逐像素重合（身体不抠空）；敲键时向下拉伸覆盖，不会露出空缺
+        self.paw_srcs = []
+        self.paw_fracs = []     # (x, y, w, h) 在整图中的比例
+        py0 = round(h * PAW_TOP)
+        fy = round(h * PAW_FEATHER_Y)
+        fx = round(w * PAW_FEATHER_X)
+        for x0, x1 in PAW_SPANS:
+            rx0, rx1 = round(w * x0), round(w * x1)
+            pw, ph = rx1 - rx0, h - py0
+            paw = src.copy(rx0, py0, pw, ph)
+            pp = QPainter(paw)
+            pp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+            gy = QLinearGradient(0, 0, 0, fy)
+            gy.setColorAt(0.0, QColor(0, 0, 0, 0))
+            gy.setColorAt(1.0, QColor(0, 0, 0, 255))
+            pp.fillRect(0, 0, pw, fy, gy)
+            gxl = QLinearGradient(0, 0, fx, 0)
+            gxl.setColorAt(0.0, QColor(0, 0, 0, 0))
+            gxl.setColorAt(1.0, QColor(0, 0, 0, 255))
+            pp.fillRect(0, 0, fx, ph, gxl)
+            gxr = QLinearGradient(pw - fx, 0, pw, 0)
+            gxr.setColorAt(0.0, QColor(0, 0, 0, 255))
+            gxr.setColorAt(1.0, QColor(0, 0, 0, 0))
+            pp.fillRect(pw - fx, 0, fx, ph, gxr)
+            pp.end()
+            self.paw_srcs.append(QPixmap.fromImage(paw))
+            self.paw_fracs.append((rx0 / w, py0 / h, pw / w, ph / h))
+
         self.body_src = QPixmap.fromImage(body)
         self.head_src = QPixmap.fromImage(head)
         self.head_x_frac = crop_x / w    # head 层在整图中的水平起点比例
@@ -437,6 +474,10 @@ class Pet(QWidget):
         self.body_pix = self.body_src.scaledToHeight(hpx, Qt.SmoothTransformation)
         head_h = max(1, round(self.head_src.height() * hpx / self.src.height()))
         self.head_pix = self.head_src.scaledToHeight(head_h, Qt.SmoothTransformation)
+        self.paw_pix = [
+            ps.scaledToHeight(max(1, round(ps.height() * hpx / self.src.height())),
+                              Qt.SmoothTransformation)
+            for ps in self.paw_srcs]
         # 窗口内为动画预留的空间：头顶留跳跃高度，左右留抖动/压扁/转头的余量，
         # 底部留放小键盘的区域（键盘互动）
         self.top_pad = round(self.pix.height() * 0.32)
@@ -707,7 +748,7 @@ class Pet(QWidget):
         return 0.0
 
     def _draw_keyboard(self, p):
-        """画身前小键盘与两只拍键的脚掌（键盘固定在地面，不随互动动画位移）。"""
+        """画身前小键盘（固定在地面，不随互动动画位移）；返回键盘高度。"""
         kw = self.pix.width() * 0.62
         kh = self.bottom_pad * 1.35
         kx = (self.width() - kw) / 2
@@ -731,26 +772,20 @@ class Pet(QWidget):
                 x = kx + gap + c * (key_w + gap)
                 p.drawRoundedRect(QRectF(x, y, key_w, key_h),
                                   key_h * 0.25, key_h * 0.25)
+        return kh
 
-        # 脚掌：悬停在键盘上方，敲键时拍下；左右脚各自独立
+    def _draw_paws(self, p, r, press_px):
+        """把从原图裁出的两只脚原位叠回（静止时与身体逐像素重合）；
+        敲键时顶端固定、向下拉伸 press_px 像素压到键盘上。"""
         now = time.monotonic()
-        paw_w, paw_h = kw * 0.21, kh * 0.62
-        rest_y = ky - paw_h * 0.60
-        press_y = ky + kh * 0.18
-        p.setPen(QColor(150, 120, 95))
-        p.setBrush(QColor(247, 238, 224))
-        for side, fx in ((0, 0.28), (1, 0.72)):
+        for side, (pix, (xf, yf, wf, hf)) in enumerate(
+                zip(self.paw_pix, self.paw_fracs)):
             prog = self._paw_progress(side, now)
-            cx = kx + kw * fx
-            cy = rest_y + (press_y - rest_y) * prog
-            paw = QRectF(cx - paw_w / 2, cy, paw_w, paw_h)
-            p.drawEllipse(paw)
-            # 两道脚趾缝，压下时更明显
-            if prog > 0.05:
-                p.drawLine(QRectF(paw).center().toPoint() + QPoint(round(-paw_w * 0.12), round(-paw_h * 0.38)),
-                           QRectF(paw).center().toPoint() + QPoint(round(-paw_w * 0.12), round(-paw_h * 0.10)))
-                p.drawLine(QRectF(paw).center().toPoint() + QPoint(round(paw_w * 0.12), round(-paw_h * 0.38)),
-                           QRectF(paw).center().toPoint() + QPoint(round(paw_w * 0.12), round(-paw_h * 0.10)))
+            rect = QRectF(r.x() + r.width() * xf,
+                          r.y() + r.height() * yf,
+                          r.width() * wf,
+                          r.height() * hf + press_px * prog)
+            p.drawPixmap(rect, pix, QRectF(pix.rect()))
 
     # ---------- 绘制 ----------
     def _layout(self, t=None):
@@ -780,8 +815,11 @@ class Pet(QWidget):
                            r.height() * self.head_h_frac)
         p.drawPixmap(head_rect, self.head_pix, QRectF(self.head_pix.rect()))
         p.restore()
+        # 脚已从身体抠出：键盘画在身体前，脚层最后叠回（敲键时压向键盘）
+        press_px = 0.0
         if self.kb_enabled:
-            self._draw_keyboard(p)
+            press_px = self._draw_keyboard(p) * PAW_PRESS_FRAC
+        self._draw_paws(p, r, press_px)
 
     # ---------- 互动 ----------
     def mousePressEvent(self, e):
