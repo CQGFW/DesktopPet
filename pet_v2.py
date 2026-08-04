@@ -14,17 +14,22 @@
 - 右键菜单新增"自动走动"开关（默认关闭）：开启后宠物在当前屏幕右下 1/4
   区域内随机游走（匀速走向随机目标点，到达后停留数秒再选下一个），
   拖拽 / 菜单打开 / 减少动态效果时暂停。
+- 新增键盘互动（BongoCat 风格，默认开启，可右键关闭）：身前放一块小键盘，
+  全局低阶键盘钩子检测敲键，按键在 QWERTY 左半区用左脚、右半区用右脚、
+  其余键交替，脚掌拍下后平滑抬回；减少动态效果时不响应。
 
 其余与 V1 相同：点击弹语录气泡并轮流触发互动动画（跳跃 → 压扁回弹 → 左右
 抖动）、拖拽、滚轮缩放（25%~150%，脚底不动）、右键菜单退出。"""
 import ctypes
+import ctypes.wintypes as wintypes
 import math
 import os
 import sys
 import random
+import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, QPoint, QRect, QRectF
+from PySide6.QtCore import Qt, QTimer, QPoint, QRect, QRectF, QObject, Signal
 from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QFontMetrics,
                            QPainterPath, QImage, QLinearGradient)
 from PySide6.QtWidgets import QApplication, QWidget, QMenu
@@ -55,6 +60,27 @@ HEAD_BAND_X, HEAD_BAND_Y = 0.08, 0.08   # 左 / 下羽化过渡带宽度（原�
 ERASE_MX, ERASE_MY = 0.07, 0.06         # 抠空区边缘的渐变余量：转头后由静态皮毛补位
 
 SPI_GETCLIENTAREAANIMATION = 0x1042
+
+# 键盘互动（BongoCat 风格）：全局低阶键盘钩子检测敲键，宠物用两只脚拍打
+# 身前的小键盘；按键位于 QWERTY 左半区用左脚、右半区用右脚，其余键交替。
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
+WM_KEYUP, WM_SYSKEYUP = 0x0101, 0x0105
+WM_QUIT = 0x0012
+PM_NOREMOVE = 0x0000
+LLKHF_EXTENDED = 0x01           # 扩展键位（如小键盘 Enter），参与物理键标识
+LLKHF_INJECTED = 0x10           # 软件合成按键（SendInput 等），不触发拍击
+KB_TAP_HOLD_MS = 90         # 脚掌压在键上的保持时长
+KB_TAP_LIFT_MS = 130        # 抬回悬停位的过渡时长
+# 左手区按键：ESC/Tab/Caps/左Shift/左Ctrl/Win/Alt、1~6、QWERT、ASDFG、ZXCVB
+LEFT_VKS = frozenset(
+    [0x1B, 0x09, 0x14, 0xA0, 0xA2, 0x5B, 0xA4]
+    + list(range(0x31, 0x37))
+    + [ord(c) for c in "QWERTASDFGZXCVB"])
+RIGHT_VKS = frozenset(
+    [0x08, 0x0D, 0xA1, 0xA3, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xDB, 0xDC, 0xDD, 0xDE]
+    + [0x30, 0x37, 0x38, 0x39]
+    + [ord(c) for c in "YUIOPHJKLNM"])
 
 # 闲置提醒：距上次互动超过随机间隔时自动弹一条语录；间隔每次在区间内随机取值
 IDLE_MIN_MS = 90_000
@@ -98,6 +124,98 @@ def query_reduced_motion():
         return bool(ok) and not enabled.value
     except Exception:
         return False
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", wintypes.DWORD),
+                ("scanCode", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", wintypes.WPARAM)]   # ULONG_PTR
+
+
+class KeyListener(QObject):
+    """全局键盘监听：后台线程挂 WH_KEYBOARD_LL 低阶钩子 + 消息循环。
+    物理按键按下 / 松开时发 pressed(vk, key_id) / released(vk, key_id) 信号
+    （跨线程队列投递到主线程）；key_id 由 scanCode + 扩展位组成，用于区分
+    共享同一 vkCode 的物理键（如主键盘 / 小键盘 Enter）。注入的合成按键忽略。
+    仅监听不拦截（总是 CallNextHookEx 放行）。钩子安装失败发 failed 信号。
+    先连好信号再调 start()；stop() 阻塞等待线程解钩退出。"""
+    pressed = Signal(int, int)
+    released = Signal(int, int)
+    failed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._tid = None
+        self._started = threading.Event()   # 消息队列就绪或安装失败后置位
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def _run(self):
+        user32 = ctypes.windll.user32
+        HOOKPROC = ctypes.WINFUNCTYPE(
+            wintypes.LPARAM, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        user32.SetWindowsHookExW.argtypes = (
+            ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD)
+        user32.CallNextHookEx.restype = wintypes.LPARAM
+        user32.CallNextHookEx.argtypes = (
+            ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+        user32.UnhookWindowsHookEx.argtypes = (ctypes.c_void_p,)
+        user32.GetMessageW.restype = ctypes.c_int
+        user32.GetMessageW.argtypes = (
+            ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT)
+        user32.PeekMessageW.restype = wintypes.BOOL
+        user32.PeekMessageW.argtypes = (
+            ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+            wintypes.UINT, wintypes.UINT, wintypes.UINT)
+
+        def proc(n_code, w_param, l_param):
+            if n_code >= 0:
+                kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT))[0]
+                if not (kb.flags & LLKHF_INJECTED):
+                    key_id = int(kb.scanCode) | ((int(kb.flags) & LLKHF_EXTENDED) << 16)
+                    try:
+                        if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                            self.pressed.emit(int(kb.vkCode), key_id)
+                        elif w_param in (WM_KEYUP, WM_SYSKEYUP):
+                            self.released.emit(int(kb.vkCode), key_id)
+                    except RuntimeError:
+                        pass   # 退出阶段 QObject 已销毁
+            return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+        self._proc = HOOKPROC(proc)   # 持有引用，防止回调被 GC
+        hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, None, 0)
+        if not hook:
+            self._started.set()       # 失败也置位，stop() 不必等超时
+            try:
+                self.failed.emit()
+            except RuntimeError:
+                pass
+            return
+        try:
+            msg = wintypes.MSG()
+            # PeekMessage 强制创建本线程消息队列，之后 stop() 的投递才可达
+            user32.PeekMessageW(ctypes.byref(msg), None, WM_QUIT, WM_QUIT, PM_NOREMOVE)
+            self._tid = ctypes.windll.kernel32.GetCurrentThreadId()
+            self._started.set()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                pass
+        finally:
+            user32.UnhookWindowsHookEx(ctypes.c_void_p(hook))
+
+    def stop(self):
+        """通知钩子线程退出并等待其解钩结束（最多 1 秒）。"""
+        if not self._thread.is_alive():
+            return
+        if self._started.wait(timeout=1.0) and self._tid:
+            if not ctypes.windll.user32.PostThreadMessageW(self._tid, WM_QUIT, 0, 0):
+                return    # 投递失败：不再空等，线程为 daemon 随进程退出
+        self._thread.join(timeout=1.0)
 
 
 class Bubble(QWidget):
@@ -167,6 +285,7 @@ class Pet(QWidget):
 
         self.src = QPixmap(resource_path("cat_soft.png"))   # 高清羽化素材
         self.scale = 1.0
+        self.kb_enabled = True    # 键盘互动开关（影响底部键盘区留白）
         self.dragging = False
         self.drag_offset = QPoint()
         self._press_pos = None
@@ -205,8 +324,26 @@ class Pet(QWidget):
         self.act_walk.setCheckable(True)
         self.act_walk.setChecked(False)
         self.act_walk.toggled.connect(self._set_walk)
+        self.act_kb = self.menu.addAction("键盘互动")
+        self.act_kb.setCheckable(True)
+        self.act_kb.setChecked(True)
+        self.act_kb.toggled.connect(self._set_kb)
         self.menu.addSeparator()
         self.menu.addAction("退出", QApplication.quit)
+
+        # 键盘互动：全局钩子监听敲键，两只脚拍打身前小键盘。
+        # _held 记录按住中的物理键标识 → 所用脚（忽略系统自动重复、松键配对）；
+        # _paw_held[i] 为该脚当前按住的键数，>0 时脚保持压下；
+        # _paw_lift[i] 为该脚开始抬起的时刻（保证快速敲击也有可见的按压段）
+        self._held = {}
+        self._paw_held = [0, 0]
+        self._paw_lift = [-1e9, -1e9]
+        self._paw_alt = 0            # 未知分区按键交替用脚
+        self.key_listener = KeyListener()
+        self.key_listener.pressed.connect(self._on_global_key)
+        self.key_listener.released.connect(self._on_global_key_up)
+        self.key_listener.failed.connect(self._on_kb_hook_failed)
+        self.key_listener.start()    # 信号连好后再启动，避免漏掉 failed 通知
 
         # 自动走动状态：目标点为脚底中心的屏幕坐标，None 表示正在停留；
         # _walk_pos 为浮点脚底位置（避免逐帧取整累计出速度/方向量化误差）
@@ -300,14 +437,16 @@ class Pet(QWidget):
         self.body_pix = self.body_src.scaledToHeight(hpx, Qt.SmoothTransformation)
         head_h = max(1, round(self.head_src.height() * hpx / self.src.height()))
         self.head_pix = self.head_src.scaledToHeight(head_h, Qt.SmoothTransformation)
-        # 窗口内为动画预留的空间：头顶留跳跃高度，左右留抖动/压扁/转头的余量
+        # 窗口内为动画预留的空间：头顶留跳跃高度，左右留抖动/压扁/转头的余量，
+        # 底部留放小键盘的区域（键盘互动）
         self.top_pad = round(self.pix.height() * 0.32)
         self.side_pad = round(self.pix.width() * 0.15)
+        self.bottom_pad = round(self.pix.height() * 0.12) if self.kb_enabled else 0
 
     def _apply_geometry(self, foot_x, foot_y):
         """按当前素材重设窗口尺寸，并保持脚底中心位于 (foot_x, foot_y)。"""
         w = self.pix.width() + 2 * self.side_pad
-        h = self.pix.height() + self.top_pad + 6
+        h = self.pix.height() + self.top_pad + self.bottom_pad + 6
         self.resize(w, h)
         self.move(foot_x - w // 2, foot_y - h)
 
@@ -431,7 +570,7 @@ class Pet(QWidget):
     def _cat_rect(self):
         """当前猫咪主体（未叠加动画形变）的窗口内矩形。"""
         return QRect((self.width() - self.pix.width()) // 2,
-                     self.height() - self.pix.height() - 3,
+                     self.height() - self.bottom_pad - self.pix.height() - 3,
                      self.pix.width(), self.pix.height())
 
     def _update_head_target(self):
@@ -513,6 +652,106 @@ class Pet(QWidget):
             return amp * math.exp(-3 * t) * math.sin(t * 6 * math.pi), 0.0, 1.0, 1.0
         return 0.0, 0.0, 1.0, 1.0
 
+    # ---------- 键盘互动 ----------
+    def _set_kb(self, on):
+        """开关键盘互动：底部键盘区留白联动增减，脚底位置保持不动。"""
+        self.kb_enabled = on
+        self._held.clear()
+        self._paw_held = [0, 0]
+        self._paw_lift = [-1e9, -1e9]
+        self._set_scale(self.scale)
+        self.update()
+
+    def _on_kb_hook_failed(self):
+        """全局钩子安装失败：关闭并禁用键盘互动，避免菜单显示已开启却无效。"""
+        self.act_kb.setChecked(False)
+        self.act_kb.setEnabled(False)
+        self.act_kb.setText("键盘互动（不可用）")
+
+    def _on_global_key(self, vk, key_id):
+        """物理按键按下：按 QWERTY 左右分区选脚，未知键交替；自动重复忽略。"""
+        if not self.kb_enabled or self.reduced_motion or key_id in self._held:
+            return
+        if vk in LEFT_VKS:
+            side = 0
+        elif vk in RIGHT_VKS:
+            side = 1
+        else:
+            self._paw_alt ^= 1
+            side = self._paw_alt
+        self._held[key_id] = side
+        self._paw_held[side] += 1
+        # 抬起时刻至少在按下后 KB_TAP_HOLD_MS，快速敲击也有可见按压段
+        self._paw_lift[side] = time.monotonic() + KB_TAP_HOLD_MS / 1000.0
+        self.update()
+
+    def _on_global_key_up(self, vk, key_id):
+        """物理按键松开：对应脚的按住计数 -1，归零后从抬起时刻开始回弹。"""
+        side = self._held.pop(key_id, None)
+        if side is None:    # 启动前就按住的键 / 开关切换期间的松键
+            return
+        self._paw_held[side] -= 1
+        if self._paw_held[side] <= 0:
+            self._paw_held[side] = 0
+            self._paw_lift[side] = max(self._paw_lift[side], time.monotonic())
+            self.update()
+
+    def _paw_progress(self, side, now):
+        """脚掌按压进度（0 悬停 ~ 1 压在键上）：按住保持压下，松开平滑抬回。"""
+        if self._paw_held[side] > 0 or now < self._paw_lift[side]:
+            return 1.0
+        dt = (now - self._paw_lift[side]) * 1000.0
+        if dt < KB_TAP_LIFT_MS:
+            u = dt / KB_TAP_LIFT_MS
+            return 1.0 - u * u * (3 - 2 * u)   # smoothstep 抬起
+        return 0.0
+
+    def _draw_keyboard(self, p):
+        """画身前小键盘与两只拍键的脚掌（键盘固定在地面，不随互动动画位移）。"""
+        kw = self.pix.width() * 0.62
+        kh = self.bottom_pad * 1.35
+        kx = (self.width() - kw) / 2
+        ky = self.height() - 2 - kh
+        kb = QRectF(kx, ky, kw, kh)
+
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QColor(45, 47, 56))
+        p.setBrush(QColor(70, 72, 82))
+        p.drawRoundedRect(kb, kh * 0.18, kh * 0.18)
+        # 键帽：3 行小圆角矩形，行间留缝
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(168, 171, 184))
+        rows, gap = 3, kh * 0.09
+        key_h = (kh - gap * (rows + 1)) / rows
+        for r_i in range(rows):
+            y = ky + gap + r_i * (key_h + gap)
+            n = 10 - r_i          # 下面的行键少一点，略有键盘感
+            key_w = (kw - gap * (n + 1)) / n
+            for c in range(n):
+                x = kx + gap + c * (key_w + gap)
+                p.drawRoundedRect(QRectF(x, y, key_w, key_h),
+                                  key_h * 0.25, key_h * 0.25)
+
+        # 脚掌：悬停在键盘上方，敲键时拍下；左右脚各自独立
+        now = time.monotonic()
+        paw_w, paw_h = kw * 0.21, kh * 0.62
+        rest_y = ky - paw_h * 0.60
+        press_y = ky + kh * 0.18
+        p.setPen(QColor(150, 120, 95))
+        p.setBrush(QColor(247, 238, 224))
+        for side, fx in ((0, 0.28), (1, 0.72)):
+            prog = self._paw_progress(side, now)
+            cx = kx + kw * fx
+            cy = rest_y + (press_y - rest_y) * prog
+            paw = QRectF(cx - paw_w / 2, cy, paw_w, paw_h)
+            p.drawEllipse(paw)
+            # 两道脚趾缝，压下时更明显
+            if prog > 0.05:
+                p.drawLine(QRectF(paw).center().toPoint() + QPoint(round(-paw_w * 0.12), round(-paw_h * 0.38)),
+                           QRectF(paw).center().toPoint() + QPoint(round(-paw_w * 0.12), round(-paw_h * 0.10)))
+                p.drawLine(QRectF(paw).center().toPoint() + QPoint(round(paw_w * 0.12), round(-paw_h * 0.38)),
+                           QRectF(paw).center().toPoint() + QPoint(round(paw_w * 0.12), round(-paw_h * 0.10)))
+
     # ---------- 绘制 ----------
     def _layout(self, t=None):
         """当前帧猫咪整体的目标矩形（浮点，亚像素）：脚底锚定 + 动画/呼吸形变。"""
@@ -521,7 +760,7 @@ class Pet(QWidget):
         tw = self.pix.width() * sx * bx
         th = self.pix.height() * sy * by
         x = (self.width() - tw) / 2 + dx
-        y = self.height() - th - 3 - dy
+        y = self.height() - self.bottom_pad - th - 3 - dy
         return QRectF(x, y, tw, th)
 
     def paintEvent(self, _):
@@ -541,6 +780,8 @@ class Pet(QWidget):
                            r.height() * self.head_h_frac)
         p.drawPixmap(head_rect, self.head_pix, QRectF(self.head_pix.rect()))
         p.restore()
+        if self.kb_enabled:
+            self._draw_keyboard(p)
 
     # ---------- 互动 ----------
     def mousePressEvent(self, e):
@@ -585,7 +826,7 @@ class Pet(QWidget):
 
     def say(self, text):
         self.screen_rect = self._current_screen_rect()
-        head_y = self.y() + self.height() - self.pix.height()   # 猫头顶
+        head_y = self.y() + self.height() - self.bottom_pad - self.pix.height()   # 猫头顶
         anchor_x = self.x() + self.width() // 2
         # 窗口顶部距屏幕顶部太近时改到下方（用窗口位置而非猫头顶，
         # 因为 top_pad 留白会让猫头顶始终距屏幕顶有 ~89px，导致贴顶时阈值不触发）
@@ -628,5 +869,6 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
     pet = Pet()
+    app.aboutToQuit.connect(pet.key_listener.stop)   # 退出时结束钩子线程
     pet.show()
     sys.exit(app.exec())

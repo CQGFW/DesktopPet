@@ -34,7 +34,7 @@ for a, b in zip(bys, bys[1:]):
     assert abs(b - a) < 0.002, "breathing must be continuous (no frame jump)"
 for i in range(0, 240, 17):
     r = p._layout(t0 + i * 0.033)
-    assert abs(r.bottom() - (p.height() - 3)) < 1e-6, "feet must stay anchored"
+    assert abs(r.bottom() - (p.height() - p.bottom_pad - 3)) < 1e-6, "feet must stay anchored"
     assert abs(r.center().x() - p.width() / 2) < 1e-6, "no horizontal drift"
 amp_px = p.pix.height() * m.BREATH_AMP_Y
 print(f"breath: ±{m.BREATH_AMP_Y*100:.1f}% (~{amp_px:.1f}px), continuous, foot/center anchored OK")
@@ -103,11 +103,12 @@ print("reduced-motion: breath/head/click-anim off, head snaps to 0, bubble kept 
 # ---------- 0° 头身分层应还原原图 ----------
 p.anim_kind = None
 p.reduced_motion = True     # 冻结呼吸，布局为整数矩形
+p.act_kb.setChecked(False)  # 键盘会画在猫脚前，先关掉再逐像素比对
 img = QImage(p.size(), QImage.Format_ARGB32)
 img.fill(0)
 p.render(img)
 ref = p.pix.toImage().convertToFormat(QImage.Format_ARGB32)
-ox, oy = p.side_pad, p.height() - p.pix.height() - 3
+ox, oy = p.side_pad, p.height() - p.bottom_pad - p.pix.height() - 3
 total = bad = 0
 for j in range(0, ref.height(), 5):
     for i in range(0, ref.width(), 5):
@@ -122,6 +123,7 @@ for j in range(0, ref.height(), 5):
 assert total > 800, total
 assert bad / total < 0.02, f"composite mismatch {bad}/{total}"
 print(f"split layers reconstruct original at 0°: {bad}/{total} outliers OK")
+p.act_kb.setChecked(True)
 p.reduced_motion = False
 
 # ---------- V1 回归：缩放锚点 / 气泡 / 互动动画 ----------
@@ -237,7 +239,7 @@ print("rotated head stays inside window at ±max angle OK")
 
 # ---------- 右键菜单：置顶 / 自动走动开关 + 退出 ----------
 labels = [a.text() for a in p.menu.actions() if a.text()]
-assert labels == ["始终置顶", "自动走动", "退出"], labels
+assert labels == ["始终置顶", "自动走动", "键盘互动", "退出"], labels
 assert p.act_topmost.isChecked() and bool(p.windowFlags() & Qt.WindowStaysOnTopHint)
 p.act_topmost.setChecked(False)
 app.processEvents()     # show 延后到事件循环，先跑一轮
@@ -337,5 +339,50 @@ assert not p.walk_enabled and not p.walk_timer.isActive()
 assert p.walk_target is None and p._walk_pos is None
 assert not p.walk_pause_timer.isActive(), "disable must stop pause timer"
 print("walk: paused by drag/bubble/reduced-motion, frozen stay, drag re-pick, clean disable OK")
+
+# ---------- 键盘互动：分区选脚、自动重复忽略、按住保持、开关联动留白 ----------
+import time as _time
+assert p.kb_enabled and p.act_kb.isChecked(), "keyboard interaction defaults on"
+assert p.bottom_pad > 0, "keyboard area reserved below the cat"
+p._on_global_key(ord('A'), 30)
+assert p._held[30] == 0 and p._paw_held[0] == 1, "A is a left-hand key"
+p._on_global_key(ord('A'), 30)      # 系统自动重复：不重复计数
+assert p._paw_held[0] == 1, "auto-repeat must be ignored"
+assert p._paw_progress(0, _time.monotonic()) == 1.0, "paw stays down while held"
+p._on_global_key(ord('L'), 38)
+assert p._held[38] == 1, "L is a right-hand key"
+p._on_global_key_up(ord('A'), 30)
+p._on_global_key_up(ord('L'), 38)
+assert p._paw_held == [0, 0]
+assert p._paw_progress(0, _time.monotonic() + 1.0) == 0.0, "paw lifts back after release"
+p._on_global_key_up(ord('Q'), 16)   # 无配对按下的松键：安全忽略
+# 同一 vk 不同物理键（主/小键盘 Enter）按 key_id 区分，不互相吞掉
+p._on_global_key(0x0D, 28)
+p._on_global_key(0x0D, 28 | (1 << 16))
+assert p._paw_held[1] == 2, "same vk on two physical keys must both count"
+p._on_global_key_up(0x0D, 28)
+p._on_global_key_up(0x0D, 28 | (1 << 16))
+assert p._paw_held == [0, 0]
+sides = []
+for _ in range(2):              # 未知分区按键交替用脚
+    p._on_global_key(0x20, 57)
+    sides.append(p._held[57])
+    p._on_global_key_up(0x20, 57)
+assert sides[0] != sides[1], sides
+p.reduced_motion = True         # 减少动态效果时不响应
+p._on_global_key(ord('B'), 48)
+assert p._paw_held == [0, 0]
+p.reduced_motion = False
+foot = (p.x() + p.width() // 2, p.y() + p.height())
+p.act_kb.setChecked(False)      # 关闭：留白清零、状态清空、脚底不动
+assert p.bottom_pad == 0 and not p._held and p._paw_held == [0, 0]
+assert (p.x() + p.width() // 2, p.y() + p.height()) == foot, "toggle keeps foot anchor"
+p._on_global_key(ord('C'), 46)
+assert p._paw_held == [0, 0], "no response while disabled"
+p.act_kb.setChecked(True)
+assert p.bottom_pad > 0
+p.key_listener.stop()
+assert not p.key_listener._thread.is_alive(), "hook thread must exit on stop"
+print("keyboard tap: side split, auto-repeat, hold/lift, same-vk keys, toggle, hook shutdown OK")
 
 print("ALL PASS")
