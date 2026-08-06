@@ -186,6 +186,12 @@ class UIARECT(ctypes.Structure):
                 ("height", ctypes.c_double)]
 
 
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WECHAT_IME_PROCESSES = {"wetype_renderer.exe"}
+_WINDOW_PROCESS_NAMES = {}
+
+
 _INPUT_APIS_READY = False
 _UIA_CLIENT = None
 _CLSID_CUIAUTOMATION = GUID.parse("ff48dba4-60ef-4201-aa87-54103eef594e")
@@ -207,6 +213,10 @@ def _configure_input_apis():
         user32.GetWindowThreadProcessId.restype = wintypes.DWORD
         user32.GetWindowThreadProcessId.argtypes = (
             wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.IsWindowVisible.argtypes = (wintypes.HWND,)
         user32.GetGUIThreadInfo.restype = wintypes.BOOL
         user32.GetGUIThreadInfo.argtypes = (
             wintypes.DWORD, ctypes.POINTER(GUITHREADINFO))
@@ -216,6 +226,17 @@ def _configure_input_apis():
         user32.GetWindowRect.restype = wintypes.BOOL
         user32.GetWindowRect.argtypes = (
             wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
 
         imm32 = ctypes.windll.imm32
         imm32.ImmGetContext.restype = wintypes.HANDLE
@@ -445,6 +466,78 @@ def _ime_candidate_rect(hwnd):
         return None
 
 
+def _select_wechat_candidate(caret, windows):
+    nearby = []
+    for process_name, rect in windows:
+        if process_name.lower() not in WECHAT_IME_PROCESSES:
+            continue
+        if not (80 <= rect.width() <= 1200 and 24 <= rect.height() <= 180):
+            continue
+        dx = max(rect.left() - caret.right(), caret.left() - rect.right(), 0)
+        dy = max(rect.top() - caret.bottom(), caret.top() - rect.bottom(), 0)
+        if dx <= 240 and dy <= 240:
+            nearby.append((dx * dx + dy * dy, -rect.width(), rect))
+    return min(nearby, key=lambda item: (item[0], item[1]))[2] if nearby else None
+
+
+def _window_process_name(hwnd):
+    process_id = wintypes.DWORD()
+    if not ctypes.windll.user32.GetWindowThreadProcessId(
+            hwnd, ctypes.byref(process_id)):
+        return None
+    if process_id.value in _WINDOW_PROCESS_NAMES:
+        return _WINDOW_PROCESS_NAMES[process_id.value]
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, process_id.value)
+    if not handle:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(
+                handle, 0, buffer, ctypes.byref(size)):
+            return None
+        name = os.path.basename(buffer.value).lower()
+        _WINDOW_PROCESS_NAMES[process_id.value] = name
+        return name
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _wechat_candidate_rect(caret):
+    if not _configure_input_apis():
+        return None
+    windows = []
+    callback_failed = False
+    user32 = ctypes.windll.user32
+
+    @WNDENUMPROC
+    def collect(hwnd, _):
+        nonlocal callback_failed
+        try:
+            if user32.IsWindowVisible(hwnd):
+                process_name = _window_process_name(hwnd)
+                if process_name in WECHAT_IME_PROCESSES:
+                    rect = _window_rect(hwnd)
+                    if rect is not None:
+                        windows.append((process_name, rect))
+            return True
+        except Exception:
+            callback_failed = True
+            return False
+
+    try:
+        if not user32.EnumWindows(collect, 0):
+            return None
+        if callback_failed:
+            return None
+        return _select_wechat_candidate(caret, windows)
+    except Exception:
+        return None
+
+
 def query_input_context():
     """Return the foreground caret and exclusion rectangles, or None on failure."""
     if not _configure_input_apis():
@@ -471,7 +564,9 @@ def query_input_context():
         if caret is None:
             return None
         ime_hwnd = (info.hwndFocus or info.hwndCaret) if has_gui_info else foreground
-        candidate = _ime_candidate_rect(ime_hwnd)
+        wechat_candidate = _wechat_candidate_rect(caret)
+        candidate = (wechat_candidate if wechat_candidate is not None
+                     else _ime_candidate_rect(ime_hwnd))
         screen_obj = QApplication.screenAt(caret.center()) or QApplication.primaryScreen()
         if screen_obj is None:
             return None
@@ -493,6 +588,7 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
         return max(screen.top(), min(y, max_y))
 
     avoids = []
+    candidate_avoid = None
     if focus is not None and not focus.isNull() and focus.isValid():
         compact_limit = max(INPUT_COMPACT_FOCUS_MAX_H,
                             pet_size.height() + gap * 2,
@@ -502,10 +598,12 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
         if focus.contains(caret.center()) and focus.height() <= compact_limit:
             avoids.append(focus.adjusted(-gap, -gap, gap, gap))
     if candidate is not None and not candidate.isNull() and candidate.isValid():
-        avoids.append(candidate.adjusted(-gap, -gap, gap, gap))
+        candidate_avoid = candidate.adjusted(-gap, -gap, gap, gap)
+        avoids.append(candidate_avoid)
 
     center_x = clamp_x(caret.center().x() - width // 2)
     below_y = caret.bottom() + gap + 1
+    preferred_below = QRect(center_x, below_y, width, height)
     for _ in range(len(avoids) + 1):
         probe = QRect(center_x, below_y, width, height)
         hits = [rect for rect in avoids if probe.intersects(rect)]
@@ -513,12 +611,19 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
             break
         below_y = max(rect.bottom() + 1 for rect in hits)
 
-    candidates = [(center_x, below_y),
-                  (center_x, caret.top() - gap - height),
-                  (caret.left() - gap - width,
-                   caret.center().y() - height // 2),
-                  (caret.right() + gap + 1,
-                   caret.center().y() - height // 2)]
+    if candidate_avoid is not None and preferred_below.intersects(candidate_avoid):
+        side_y = caret.center().y() - height // 2
+        candidates = [(candidate.left() - gap - width, side_y),
+                      (candidate.right() + gap + 1, side_y),
+                      (center_x, candidate.bottom() + gap + 1),
+                      (center_x, caret.top() - gap - height)]
+    else:
+        candidates = [(center_x, below_y),
+                      (center_x, caret.top() - gap - height),
+                      (caret.left() - gap - width,
+                       caret.center().y() - height // 2),
+                      (caret.right() + gap + 1,
+                       caret.center().y() - height // 2)]
 
     for x, y in candidates:
         rect = QRect(clamp_x(x), y, width, height)
