@@ -4,7 +4,7 @@ import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import math
 import sys
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 import pet_v2 as m
@@ -15,6 +15,41 @@ p.show()
 p.reduced_motion = False   # 测试机的系统设置不应影响用例
 assert not p.src.isNull(), "cat_soft.png load failed"
 print("sprite:", p.src.width(), "x", p.src.height(), "| display:", p.pix.width(), "x", p.pix.height())
+
+# ---------- 输入光标跟随：安全位置几何契约 ----------
+screen = QRect(0, 0, 1280, 720)
+caret = QRect(500, 300, 2, 20)
+focus = QRect(450, 280, 220, 45)
+candidate = QRect(470, 325, 280, 80)
+pos = m._input_safe_position(caret, focus, candidate, QSize(60, 52), screen)
+pet_rect = QRect(pos, QSize(60, 52))
+assert pet_rect.top() >= candidate.bottom() + 13
+assert not pet_rect.intersects(focus)
+assert not pet_rect.intersects(candidate)
+assert screen.contains(pet_rect)
+
+edge = m._input_safe_position(QRect(1268, 690, 2, 20), QRect(1200, 680, 79, 39), None,
+                              QSize(60, 52), screen)
+assert screen.contains(QRect(edge, QSize(60, 52)))
+print("input-follow geometry: safe placement and screen clamping contract OK")
+
+# ---------- 输入光标跟随：Pet 状态切换与脚底锚定 ----------
+old_query = m.query_input_context
+saved_scale = p.scale
+saved_foot = (p.x() + p.width() // 2, p.y() + p.height())
+m.query_input_context = lambda: m.InputContext(
+    QRect(300, 200, 2, 20), QRect(250, 180, 140, 45), None,
+    QRect(0, 0, 1280, 720))
+p._input_on_key()
+assert p.input_follow_active and abs(p.scale - saved_scale * 0.2) < 1e-9
+active_scale = p.scale
+p._input_on_key()
+assert p.input_saved_scale == saved_scale and p.scale == active_scale
+p._stop_input_follow()
+assert not p.input_follow_active and abs(p.scale - saved_scale) < 1e-9
+assert (p.x() + p.width() // 2, p.y() + p.height()) == saved_foot
+m.query_input_context = old_query
+print("input-follow state: activation, idempotence, restore and foot anchor contract OK")
 
 # ---------- 待机不再左右平移 ----------
 assert not hasattr(p, "vx") and not hasattr(p, "behave"), "walk logic should be removed"
