@@ -409,8 +409,23 @@ def _client_rect_to_screen(hwnd, rect):
         return None
 
 
+def _candidate_form_rect(form):
+    """Convert a CANDIDATEFORM to its screen-space exclusion rectangle."""
+    if (form.rcArea.right > form.rcArea.left
+            and form.rcArea.bottom > form.rcArea.top):
+        return QRect(form.rcArea.left, form.rcArea.top,
+                     form.rcArea.right - form.rcArea.left,
+                     form.rcArea.bottom - form.rcArea.top)
+    return QRect(form.ptCurrentPos.x, form.ptCurrentPos.y,
+                 INPUT_IME_FALLBACK_W, INPUT_IME_FALLBACK_H)
+
+
 def _ime_candidate_rect(hwnd):
-    """Read the traditional IMM candidate exclusion area, when one is exposed."""
+    """Read the traditional IMM candidate exclusion area, when one is exposed.
+
+    CANDIDATEFORM coordinates are already in screen coordinates.  They must
+    not be passed through ClientToScreen, unlike GUITHREADINFO.rcCaret above.
+    """
     if not hwnd or not _configure_input_apis():
         return None
     try:
@@ -423,14 +438,7 @@ def _ime_candidate_rect(hwnd):
             form.dwIndex = 0
             if not imm32.ImmGetCandidateWindow(himc, 0, ctypes.byref(form)):
                 return None
-            if (form.rcArea.right > form.rcArea.left
-                    and form.rcArea.bottom > form.rcArea.top):
-                return _client_rect_to_screen(hwnd, form.rcArea)
-            point = wintypes.POINT(form.ptCurrentPos.x, form.ptCurrentPos.y)
-            if not ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point)):
-                return None
-            return QRect(point.x, point.y,
-                         INPUT_IME_FALLBACK_W, INPUT_IME_FALLBACK_H)
+            return _candidate_form_rect(form)
         finally:
             imm32.ImmReleaseContext(hwnd, himc)
     except Exception:

@@ -41,6 +41,22 @@ edge = m._input_safe_position(QRect(1268, 690, 2, 20), QRect(1200, 680, 79, 39),
 assert screen.contains(QRect(edge, QSize(60, 52)))
 print("input-follow geometry: safe placement and screen clamping contract OK")
 
+# IMM CANDIDATEFORM rectangles are already screen coordinates.  Keep a
+# non-zero target-window origin in this fixture so an accidental
+# ClientToScreen conversion would be observable.
+candidate_form = m.CANDIDATEFORM()
+candidate_form.rcArea.left = 720
+candidate_form.rcArea.top = 410
+candidate_form.rcArea.right = 980
+candidate_form.rcArea.bottom = 510
+assert m._candidate_form_rect(candidate_form) == QRect(720, 410, 260, 100)
+candidate_form.ptCurrentPos.x = 720
+candidate_form.ptCurrentPos.y = 410
+candidate_form.rcArea.right = candidate_form.rcArea.left
+candidate_form.rcArea.bottom = candidate_form.rcArea.top
+assert m._candidate_form_rect(candidate_form).topLeft() == QPoint(720, 410)
+print("input-follow IME coordinates: screen-space contract OK")
+
 # ---------- 输入光标跟随：Pet 状态切换与脚底锚定 ----------
 from PySide6.QtCore import QEvent, QPointF
 from PySide6.QtGui import QFocusEvent, QMouseEvent, QWheelEvent
