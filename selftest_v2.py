@@ -57,6 +57,16 @@ candidate_form.rcArea.bottom = candidate_form.rcArea.top
 assert m._candidate_form_rect(candidate_form).topLeft() == QPoint(720, 410)
 print("input-follow IME coordinates: screen-space contract OK")
 
+wechat_windows = [
+    ("wetype_renderer.exe", QRect(216, 134, 572, 44)),
+    ("wetype_renderer.exe", QRect(1400, 700, 500, 44)),
+    ("other_overlay.exe", QRect(210, 130, 580, 50)),
+]
+wechat_caret = QRect(226, 105, 2, 22)
+assert m._select_wechat_candidate(wechat_caret, wechat_windows) == QRect(216, 134, 572, 44)
+assert m._select_wechat_candidate(
+    wechat_caret, [("wetype_renderer.exe", QRect(216, 134, 20, 10))]) is None
+
 # ---------- 输入光标跟随：Pet 状态切换与脚底锚定 ----------
 from PySide6.QtCore import QEvent, QPointF
 from PySide6.QtGui import QFocusEvent, QMouseEvent, QWheelEvent
