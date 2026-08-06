@@ -34,21 +34,70 @@ assert screen.contains(QRect(edge, QSize(60, 52)))
 print("input-follow geometry: safe placement and screen clamping contract OK")
 
 # ---------- 输入光标跟随：Pet 状态切换与脚底锚定 ----------
+from PySide6.QtCore import QEvent, QPointF
+from PySide6.QtGui import QFocusEvent, QMouseEvent, QWheelEvent
+
+assert m.INPUT_IDLE_MS == 1000
 old_query = m.query_input_context
 saved_scale = p.scale
 saved_foot = (p.x() + p.width() // 2, p.y() + p.height())
 m.query_input_context = lambda: m.InputContext(
     QRect(300, 200, 2, 20), QRect(250, 180, 140, 45), None,
     QRect(0, 0, 1280, 720))
-p._input_on_key()
-assert p.input_follow_active and abs(p.scale - saved_scale * 0.2) < 1e-9
-active_scale = p.scale
-p._input_on_key()
-assert p.input_saved_scale == saved_scale and p.scale == active_scale
-p._stop_input_follow()
-assert not p.input_follow_active and abs(p.scale - saved_scale) < 1e-9
-assert (p.x() + p.width() // 2, p.y() + p.height()) == saved_foot
-m.query_input_context = old_query
+try:
+    def input_on():
+        p._input_on_key()
+        assert p.input_follow_active and abs(p.scale - saved_scale * 0.2) < 1e-9
+
+    def input_off():
+        assert not p.input_follow_active and abs(p.scale - saved_scale) < 1e-9
+        assert (p.x() + p.width() // 2, p.y() + p.height()) == saved_foot
+
+    # 输入跟随是独立功能，键盘互动与减少动态效果均不应阻止它启动。
+    p.act_kb.setChecked(False)
+    p.reduced_motion = True
+    input_on()
+    p._stop_input_follow()
+    input_off()
+    p.reduced_motion = False
+    p.act_kb.setChecked(True)
+
+    input_on()
+    active_scale = p.scale
+    p._input_on_key()
+    assert p.input_saved_scale == saved_scale and p.scale == active_scale
+    p._stop_input_follow()
+    input_off()
+
+    # 每个用户交互退出路径都必须还原缩放和脚底锚点。
+    input_on()
+    click = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5),
+                        QPointF(p.x() + 5, p.y() + 5), Qt.LeftButton,
+                        Qt.LeftButton, Qt.NoModifier)
+    p.mousePressEvent(click)
+    p.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(5, 5),
+                                    QPointF(p.x() + 5, p.y() + 5), Qt.LeftButton,
+                                    Qt.NoButton, Qt.NoModifier))
+    input_off()
+
+    input_on()
+    p.dragging = True
+    p.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(7, 7),
+                                 QPointF(p.x() + 7, p.y() + 7), Qt.NoButton,
+                                 Qt.LeftButton, Qt.NoModifier))
+    input_off()
+    p.dragging = False
+
+    input_on()
+    p.wheelEvent(QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 120),
+                             Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False))
+    input_off()
+
+    input_on()
+    p.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut))
+    input_off()
+finally:
+    m.query_input_context = old_query
 print("input-follow state: activation, idempotence, restore and foot anchor contract OK")
 
 # ---------- 待机不再左右平移 ----------
