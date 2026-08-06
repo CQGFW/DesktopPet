@@ -84,13 +84,10 @@ try:
     p.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5),
                                   QPointF(p.x() + 5, p.y() + 5), Qt.LeftButton,
                                   Qt.LeftButton, Qt.NoModifier))
-    p.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(25, 25),
-                                 QPointF(p.x() + 25, p.y() + 25), Qt.NoButton,
-                                 Qt.LeftButton, Qt.NoModifier))
+    input_off()
     p.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(25, 25),
                                     QPointF(p.x() + 25, p.y() + 25), Qt.LeftButton,
                                     Qt.NoButton, Qt.NoModifier))
-    input_off()
 
     input_on()
     p.wheelEvent(QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 0),
@@ -100,6 +97,11 @@ try:
     input_on()
     p.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut))
     input_off()
+
+    m.query_input_context = lambda: None
+    p._input_on_key()
+    assert not p.input_follow_active and p.scale == saved_scale
+    assert (p.x() + p.width() // 2, p.y() + p.height()) == saved_foot
 finally:
     m.query_input_context = old_query
 print("input-follow state: activation, idempotence, restore and foot anchor contract OK")

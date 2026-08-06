@@ -17,6 +17,8 @@
 - 新增键盘互动（BongoCat 风格，默认开启，可右键关闭）：身前放一块小键盘，
   全局低阶键盘钩子检测敲键，按键在 QWERTY 左半区用左脚、右半区用右脚、
   其余键交替，脚掌拍下后平滑抬回；减少动态效果时不响应。
+- 新增输入光标跟随：前台文本控件输入时移动到插入光标附近，临时缩小为
+  输入前比例的 20%，避开输入控件和 IME 候选区域；停止输入后恢复。
 
 其余与 V1 相同：点击弹语录气泡并轮流触发互动动画（跳跃 → 压扁回弹 → 左右
 抖动）、拖拽、滚轮缩放（25%~150%，脚底不动）、右键菜单退出。"""
@@ -28,6 +30,8 @@ import sys
 import random
 import threading
 import time
+import uuid
+from collections import namedtuple
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QRect, QRectF, QObject, Signal
 from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QFontMetrics,
@@ -37,6 +41,14 @@ from PySide6.QtWidgets import QApplication, QWidget, QMenu
 BASE_H = 260          # 100% 缩放时的显示高度
 MIN_SCALE, MAX_SCALE = 0.25, 1.50
 ZOOM_STEP = 1.08      # 每格滚轮的平滑步进
+
+# 输入光标跟随：输入时临时缩小并避开输入控件 / IME 候选区域
+INPUT_IDLE_MS = 1000
+INPUT_POLL_MS = 50
+INPUT_SCALE_FACTOR = 0.2
+INPUT_GAP = 12
+INPUT_IME_FALLBACK_W = 420
+INPUT_IME_FALLBACK_H = 120
 
 # 互动动画：点击时按此顺序轮流触发
 ANIM_KINDS = ("jump", "squash", "shake")
@@ -100,6 +112,8 @@ WALK_SPEED = 60                 # 像素/秒
 WALK_PAUSE_MIN_MS = 2_000       # 到达目标后停留时长的随机区间
 WALK_PAUSE_MAX_MS = 6_000
 
+InputContext = namedtuple("InputContext", "caret focus candidate screen")
+
 QUOTES = [
     "喵~ 今天也要加油鸭！",
     "本喵盯着你工作呢，别摸鱼！",
@@ -132,6 +146,370 @@ def query_reduced_motion():
         return bool(ok) and not enabled.value
     except Exception:
         return False
+
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("hwndActive", wintypes.HWND),
+                ("hwndFocus", wintypes.HWND),
+                ("hwndCapture", wintypes.HWND),
+                ("hwndMenuOwner", wintypes.HWND),
+                ("hwndMoveSize", wintypes.HWND),
+                ("hwndCaret", wintypes.HWND),
+                ("rcCaret", wintypes.RECT)]
+
+
+class CANDIDATEFORM(ctypes.Structure):
+    _fields_ = [("dwIndex", wintypes.DWORD),
+                ("dwStyle", wintypes.DWORD),
+                ("ptCurrentPos", wintypes.POINT),
+                ("rcArea", wintypes.RECT)]
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8)]
+
+    @classmethod
+    def parse(cls, value):
+        return cls.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+
+class UIARECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_double),
+                ("top", ctypes.c_double),
+                ("width", ctypes.c_double),
+                ("height", ctypes.c_double)]
+
+
+_INPUT_APIS_READY = False
+_UIA_CLIENT = None
+_CLSID_CUIAUTOMATION = GUID.parse("ff48dba4-60ef-4201-aa87-54103eef594e")
+_IID_IUIAUTOMATION = GUID.parse("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee")
+_IID_TEXT_PATTERN = GUID.parse("32e215ea-9c15-4268-8173-ee0c0eaf366c")
+UIA_TEXT_PATTERN_ID = 10014
+
+
+def _configure_input_apis():
+    """Declare pointer-sized Win32 signatures once before polling them."""
+    global _INPUT_APIS_READY
+    if _INPUT_APIS_READY:
+        return True
+    if sys.platform != "win32":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetWindowThreadProcessId.argtypes = (
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        user32.GetGUIThreadInfo.restype = wintypes.BOOL
+        user32.GetGUIThreadInfo.argtypes = (
+            wintypes.DWORD, ctypes.POINTER(GUITHREADINFO))
+        user32.ClientToScreen.restype = wintypes.BOOL
+        user32.ClientToScreen.argtypes = (
+            wintypes.HWND, ctypes.POINTER(wintypes.POINT))
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.GetWindowRect.argtypes = (
+            wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+
+        imm32 = ctypes.windll.imm32
+        imm32.ImmGetContext.restype = wintypes.HANDLE
+        imm32.ImmGetContext.argtypes = (wintypes.HWND,)
+        imm32.ImmGetCandidateWindow.restype = wintypes.BOOL
+        imm32.ImmGetCandidateWindow.argtypes = (
+            wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(CANDIDATEFORM))
+        imm32.ImmReleaseContext.restype = wintypes.BOOL
+        imm32.ImmReleaseContext.argtypes = (wintypes.HWND, wintypes.HANDLE)
+        _INPUT_APIS_READY = True
+        return True
+    except Exception:
+        return False
+
+
+def _com_vtable(pointer):
+    return ctypes.cast(
+        pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+
+
+def _com_release(pointer):
+    if pointer:
+        release = ctypes.WINFUNCTYPE(
+            wintypes.ULONG, ctypes.c_void_p)(_com_vtable(pointer)[2])
+        release(pointer)
+
+
+def _uia_client():
+    """Create the process-local UI Automation client lazily on the GUI thread."""
+    global _UIA_CLIENT
+    if _UIA_CLIENT:
+        return _UIA_CLIENT
+    if sys.platform != "win32":
+        return None
+    try:
+        ole32 = ctypes.windll.ole32
+        ole32.CoInitializeEx(None, 0x2)   # already initialized is also usable
+        ole32.CoCreateInstance.restype = ctypes.c_long
+        ole32.CoCreateInstance.argtypes = (
+            ctypes.POINTER(GUID), ctypes.c_void_p, wintypes.DWORD,
+            ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
+        client = ctypes.c_void_p()
+        hr = ole32.CoCreateInstance(
+            ctypes.byref(_CLSID_CUIAUTOMATION), None, 0x1,
+            ctypes.byref(_IID_IUIAUTOMATION), ctypes.byref(client))
+        if hr < 0 or not client:
+            return None
+        _UIA_CLIENT = client
+        return _UIA_CLIENT
+    except Exception:
+        return None
+
+
+def _uia_range_rect(text_range):
+    """Return the first UIA text-range rectangle, expanding a collapsed caret."""
+    vtable = _com_vtable(text_range)
+    expand = ctypes.WINFUNCTYPE(
+        ctypes.c_long, ctypes.c_void_p, ctypes.c_int)(vtable[6])
+    expand(text_range, 0)   # TextUnit_Character; does not alter the real selection
+
+    safe_array = ctypes.c_void_p()
+    get_rects = ctypes.WINFUNCTYPE(
+        ctypes.c_long, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p))(vtable[10])
+    if get_rects(text_range, ctypes.byref(safe_array)) < 0 or not safe_array:
+        return None
+    try:
+        oleaut32 = ctypes.windll.oleaut32
+        lower, upper = ctypes.c_long(), ctypes.c_long()
+        if oleaut32.SafeArrayGetLBound(safe_array, 1, ctypes.byref(lower)) < 0:
+            return None
+        if oleaut32.SafeArrayGetUBound(safe_array, 1, ctypes.byref(upper)) < 0:
+            return None
+        count = upper.value - lower.value + 1
+        if count < 4:
+            return None
+        data = ctypes.c_void_p()
+        if oleaut32.SafeArrayAccessData(safe_array, ctypes.byref(data)) < 0:
+            return None
+        try:
+            values = ctypes.cast(data, ctypes.POINTER(ctypes.c_double))
+            x, y, width, height = (values[i] for i in range(4))
+        finally:
+            oleaut32.SafeArrayUnaccessData(safe_array)
+        if width <= 0 or height <= 0:
+            return None
+        return QRect(round(x), round(y), max(1, round(width)), max(1, round(height)))
+    finally:
+        ctypes.windll.oleaut32.SafeArrayDestroy(safe_array)
+
+
+def _uia_input_rects():
+    """Use UI Automation TextPattern when the foreground app has no HWND caret."""
+    client = _uia_client()
+    if not client:
+        return None, None
+    element = pattern = ranges = text_range = None
+    try:
+        client_vtable = _com_vtable(client)
+        element = ctypes.c_void_p()
+        get_focused = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p))(client_vtable[8])
+        if get_focused(client, ctypes.byref(element)) < 0 or not element:
+            return None, None
+
+        element_vtable = _com_vtable(element)
+        pattern = ctypes.c_void_p()
+        get_pattern = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_int,
+            ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))(
+                element_vtable[14])
+        hr = get_pattern(element, UIA_TEXT_PATTERN_ID,
+                         ctypes.byref(_IID_TEXT_PATTERN), ctypes.byref(pattern))
+        if hr < 0 or not pattern:
+            return None, None
+
+        focus_rect = UIARECT()
+        get_bounds = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p,
+            ctypes.POINTER(UIARECT))(element_vtable[43])
+        if get_bounds(element, ctypes.byref(focus_rect)) < 0:
+            focus = None
+        elif focus_rect.width > 0 and focus_rect.height > 0:
+            focus = QRect(round(focus_rect.left), round(focus_rect.top),
+                          round(focus_rect.width), round(focus_rect.height))
+        else:
+            focus = None
+
+        pattern_vtable = _com_vtable(pattern)
+        ranges = ctypes.c_void_p()
+        get_selection = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p))(pattern_vtable[5])
+        if get_selection(pattern, ctypes.byref(ranges)) < 0 or not ranges:
+            return None, focus
+
+        ranges_vtable = _com_vtable(ranges)
+        length = ctypes.c_int()
+        get_length = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int))(ranges_vtable[3])
+        if get_length(ranges, ctypes.byref(length)) < 0 or length.value < 1:
+            return None, focus
+        text_range = ctypes.c_void_p()
+        get_element = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p))(ranges_vtable[4])
+        if get_element(ranges, 0, ctypes.byref(text_range)) < 0 or not text_range:
+            return None, focus
+        return _uia_range_rect(text_range), focus
+    except Exception:
+        return None, None
+    finally:
+        for pointer in (text_range, ranges, pattern, element):
+            _com_release(pointer)
+
+
+def _window_rect(hwnd):
+    """Return a valid top-level/client window rectangle in screen coordinates."""
+    if not hwnd or not _configure_input_apis():
+        return None
+    try:
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        if rect.right <= rect.left or rect.bottom <= rect.top:
+            return None
+        return QRect(rect.left, rect.top,
+                     rect.right - rect.left, rect.bottom - rect.top)
+    except Exception:
+        return None
+
+
+def _client_rect_to_screen(hwnd, rect):
+    """Convert a Win32 client-coordinate RECT to a non-empty Qt screen QRect."""
+    if not _configure_input_apis():
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        top_left = wintypes.POINT(rect.left, rect.top)
+        bottom_right = wintypes.POINT(rect.right, rect.bottom)
+        if not user32.ClientToScreen(hwnd, ctypes.byref(top_left)):
+            return None
+        if not user32.ClientToScreen(hwnd, ctypes.byref(bottom_right)):
+            return None
+        width = max(1, bottom_right.x - top_left.x)
+        height = max(1, bottom_right.y - top_left.y)
+        return QRect(top_left.x, top_left.y, width, height)
+    except Exception:
+        return None
+
+
+def _ime_candidate_rect(hwnd):
+    """Read the traditional IMM candidate exclusion area, when one is exposed."""
+    if not hwnd or not _configure_input_apis():
+        return None
+    try:
+        imm32 = ctypes.windll.imm32
+        himc = imm32.ImmGetContext(hwnd)
+        if not himc:
+            return None
+        try:
+            form = CANDIDATEFORM()
+            form.dwIndex = 0
+            if not imm32.ImmGetCandidateWindow(himc, 0, ctypes.byref(form)):
+                return None
+            if (form.rcArea.right > form.rcArea.left
+                    and form.rcArea.bottom > form.rcArea.top):
+                return _client_rect_to_screen(hwnd, form.rcArea)
+            point = wintypes.POINT(form.ptCurrentPos.x, form.ptCurrentPos.y)
+            if not ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point)):
+                return None
+            return QRect(point.x, point.y,
+                         INPUT_IME_FALLBACK_W, INPUT_IME_FALLBACK_H)
+        finally:
+            imm32.ImmReleaseContext(hwnd, himc)
+    except Exception:
+        return None
+
+
+def query_input_context():
+    """Return the foreground caret and exclusion rectangles, or None on failure."""
+    if not _configure_input_apis():
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        foreground = user32.GetForegroundWindow()
+        if not foreground:
+            return None
+        process_id = wintypes.DWORD()
+        thread_id = user32.GetWindowThreadProcessId(
+            foreground, ctypes.byref(process_id))
+        if not thread_id:
+            return None
+
+        info = GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(GUITHREADINFO)
+        has_gui_info = bool(user32.GetGUIThreadInfo(thread_id, ctypes.byref(info)))
+        if has_gui_info and info.hwndCaret:
+            caret = _client_rect_to_screen(info.hwndCaret, info.rcCaret)
+            focus = _window_rect(info.hwndFocus or info.hwndCaret)
+        else:
+            caret, focus = _uia_input_rects()
+        if caret is None:
+            return None
+        ime_hwnd = (info.hwndFocus or info.hwndCaret) if has_gui_info else foreground
+        candidate = _ime_candidate_rect(ime_hwnd)
+        screen_obj = QApplication.screenAt(caret.center()) or QApplication.primaryScreen()
+        if screen_obj is None:
+            return None
+        return InputContext(caret, focus, candidate, screen_obj.availableGeometry())
+    except Exception:
+        return None
+
+
+def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GAP):
+    """Choose a screen-contained pet position, preferring below the caret."""
+    width, height = pet_size.width(), pet_size.height()
+    max_x = screen.right() - width + 1
+    max_y = screen.bottom() - height + 1
+
+    def clamp_x(x):
+        return max(screen.left(), min(x, max_x))
+
+    def clamp_y(y):
+        return max(screen.top(), min(y, max_y))
+
+    avoids = []
+    for rect in (focus, candidate):
+        if rect is not None and not rect.isNull() and rect.isValid():
+            avoids.append(rect.adjusted(-gap, -gap, gap, gap))
+
+    center_x = clamp_x(caret.center().x() - width // 2)
+    below_y = caret.bottom() + gap + 1
+    for _ in range(len(avoids) + 1):
+        probe = QRect(center_x, below_y, width, height)
+        hits = [rect for rect in avoids if probe.intersects(rect)]
+        if not hits:
+            break
+        below_y = max(rect.bottom() + 1 for rect in hits)
+
+    candidates = [(center_x, below_y),
+                  (center_x, caret.top() - gap - height),
+                  (caret.left() - gap - width,
+                   caret.center().y() - height // 2),
+                  (caret.right() + gap + 1,
+                   caret.center().y() - height // 2)]
+
+    for x, y in candidates:
+        rect = QRect(clamp_x(x), y, width, height)
+        if screen.contains(rect) and not any(rect.intersects(a) for a in avoids):
+            return rect.topLeft()
+
+    return QPoint(clamp_x(center_x), clamp_y(below_y))
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -339,6 +717,17 @@ class Pet(QWidget):
         self.menu.addSeparator()
         self.menu.addAction("退出", QApplication.quit)
 
+        # 输入跟随：保存进入前的缩放 / 脚底位置，短周期刷新跨进程光标。
+        self.input_follow_active = False
+        self.input_saved_scale = None
+        self.input_saved_foot = None
+        self.input_idle_timer = QTimer(self)
+        self.input_idle_timer.setSingleShot(True)
+        self.input_idle_timer.timeout.connect(self._stop_input_follow)
+        self.input_poll_timer = QTimer(self)
+        self.input_poll_timer.setInterval(INPUT_POLL_MS)
+        self.input_poll_timer.timeout.connect(self._input_follow_tick)
+
         # 键盘互动：全局钩子监听敲键，两只脚拍打身前小键盘。
         # _held 记录按住中的物理键标识 → 所用脚（忽略系统自动重复、松键配对）；
         # _paw_held[i] 为该脚当前按住的键数，>0 时脚保持压下；
@@ -540,7 +929,7 @@ class Pet(QWidget):
 
     def _walk_paused(self):
         """走动的临时暂停条件：拖拽 / 右键菜单打开 / 气泡显示中 / 减少动态效果。"""
-        return (self.dragging or self.reduced_motion
+        return (self.dragging or self.reduced_motion or self.input_follow_active
                 or self.menu.isVisible() or self.bubble.isVisible())
 
     def _pick_walk_target(self):
@@ -693,6 +1082,50 @@ class Pet(QWidget):
             return amp * math.exp(-3 * t) * math.sin(t * 6 * math.pi), 0.0, 1.0, 1.0
         return 0.0, 0.0, 1.0, 1.0
 
+    # ---------- 输入光标跟随 ----------
+    def _move_to_input_context(self, context):
+        pos = _input_safe_position(context.caret, context.focus,
+                                   context.candidate, self.size(), context.screen)
+        self.move(pos)
+
+    def _input_on_key(self):
+        """Enter or refresh input-follow mode when the foreground exposes a caret."""
+        context = query_input_context()
+        if context is None:
+            return
+        if not self.input_follow_active:
+            self.input_saved_scale = self.scale
+            self.input_saved_foot = QPoint(
+                self.x() + self.width() // 2, self.y() + self.height())
+            self.input_follow_active = True
+            self._set_scale(self.input_saved_scale * INPUT_SCALE_FACTOR)
+            self.input_poll_timer.start()
+        self._move_to_input_context(context)
+        self.input_idle_timer.start(INPUT_IDLE_MS)
+
+    def _input_follow_tick(self):
+        """Refresh after the target application has processed the latest key."""
+        if not self.input_follow_active:
+            return
+        context = query_input_context()
+        if context is not None:
+            self._move_to_input_context(context)
+
+    def _stop_input_follow(self):
+        """Leave input mode and restore the exact pre-input scale and foot anchor."""
+        self.input_idle_timer.stop()
+        self.input_poll_timer.stop()
+        if not self.input_follow_active:
+            return
+        saved_scale = self.input_saved_scale
+        saved_foot = QPoint(self.input_saved_foot)
+        self.input_follow_active = False
+        self.input_saved_scale = None
+        self.input_saved_foot = None
+        self._set_scale(saved_scale)
+        self._apply_geometry(saved_foot.x(), saved_foot.y())
+        self.update()
+
     # ---------- 键盘互动 ----------
     def _set_kb(self, on):
         """开关键盘互动：底部键盘区留白联动增减，脚底位置保持不动。"""
@@ -711,6 +1144,7 @@ class Pet(QWidget):
 
     def _on_global_key(self, vk, key_id):
         """物理按键按下：按 QWERTY 左右分区选脚，未知键交替；自动重复忽略。"""
+        self._input_on_key()
         if not self.kb_enabled or self.reduced_motion or key_id in self._held:
             return
         if vk in LEFT_VKS:
@@ -823,6 +1257,7 @@ class Pet(QWidget):
 
     # ---------- 互动 ----------
     def mousePressEvent(self, e):
+        self._stop_input_follow()
         self._reset_idle_timer()
         if e.button() == Qt.LeftButton:
             self.dragging = True
@@ -854,8 +1289,13 @@ class Pet(QWidget):
         self.hover_pos = None   # 头部由 _frame 平滑回正
 
     def contextMenuEvent(self, e):
+        self._stop_input_follow()
         self._reset_idle_timer()
         self.menu.exec(e.globalPos())
+
+    def focusOutEvent(self, e):
+        self._stop_input_follow()
+        super().focusOutEvent(e)
 
     def _current_screen_rect(self):
         """宠物当前所在屏幕的可用区域；拖到副屏后气泡应按副屏定位。"""
@@ -891,6 +1331,7 @@ class Pet(QWidget):
 
     # ---------- 滚轮缩放：脚底位置不动 ----------
     def wheelEvent(self, e):
+        self._stop_input_follow()
         self._reset_idle_timer()
         dy = e.angleDelta().y()
         if dy == 0:   # 纯横向滚动（触控板/倾斜滚轮）不缩放
