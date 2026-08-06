@@ -81,15 +81,19 @@ try:
     input_off()
 
     input_on()
-    p.dragging = True
-    p.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(7, 7),
-                                 QPointF(p.x() + 7, p.y() + 7), Qt.NoButton,
+    p.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5),
+                                  QPointF(p.x() + 5, p.y() + 5), Qt.LeftButton,
+                                  Qt.LeftButton, Qt.NoModifier))
+    p.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(25, 25),
+                                 QPointF(p.x() + 25, p.y() + 25), Qt.NoButton,
                                  Qt.LeftButton, Qt.NoModifier))
+    p.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(25, 25),
+                                    QPointF(p.x() + 25, p.y() + 25), Qt.LeftButton,
+                                    Qt.NoButton, Qt.NoModifier))
     input_off()
-    p.dragging = False
 
     input_on()
-    p.wheelEvent(QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 120),
+    p.wheelEvent(QWheelEvent(QPointF(10, 10), QPointF(10, 10), QPoint(0, 0), QPoint(0, 0),
                              Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False))
     input_off()
 
