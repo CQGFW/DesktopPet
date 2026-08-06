@@ -28,6 +28,14 @@ assert not pet_rect.intersects(focus)
 assert not pet_rect.intersects(candidate)
 assert screen.contains(pet_rect)
 
+# 文档编辑器通常把整页暴露为焦点控件；不能因此把宠物推到页面底部。
+document_focus = QRect(10, 20, 875, 810)
+document_caret = QRect(142, 104, 2, 26)
+document_pos = m._input_safe_position(
+    document_caret, document_focus, None, QSize(60, 52), QRect(0, 0, 906, 855))
+assert document_pos.y() == document_caret.bottom() + m.INPUT_GAP + 1
+assert abs(document_pos.x() + 30 - document_caret.center().x()) <= 1
+
 edge = m._input_safe_position(QRect(1268, 690, 2, 20), QRect(1200, 680, 79, 39), None,
                               QSize(60, 52), screen)
 assert screen.contains(QRect(edge, QSize(60, 52)))

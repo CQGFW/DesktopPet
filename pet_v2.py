@@ -47,6 +47,7 @@ INPUT_IDLE_MS = 1000
 INPUT_POLL_MS = 50
 INPUT_SCALE_FACTOR = 0.2
 INPUT_GAP = 12
+INPUT_COMPACT_FOCUS_MAX_H = 96
 INPUT_IME_FALLBACK_W = 420
 INPUT_IME_FALLBACK_H = 120
 
@@ -484,9 +485,16 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
         return max(screen.top(), min(y, max_y))
 
     avoids = []
-    for rect in (focus, candidate):
-        if rect is not None and not rect.isNull() and rect.isValid():
-            avoids.append(rect.adjusted(-gap, -gap, gap, gap))
+    if focus is not None and not focus.isNull() and focus.isValid():
+        compact_limit = max(INPUT_COMPACT_FOCUS_MAX_H,
+                            pet_size.height() + gap * 2,
+                            caret.height() * 4)
+        # 文档编辑器常把整页作为焦点控件；避开整页会把宠物推到屏幕底部。
+        # 紧凑输入框避开完整边界，多行编辑区只避开光标本身与 IME 区域。
+        if focus.contains(caret.center()) and focus.height() <= compact_limit:
+            avoids.append(focus.adjusted(-gap, -gap, gap, gap))
+    if candidate is not None and not candidate.isNull() and candidate.isValid():
+        avoids.append(candidate.adjusted(-gap, -gap, gap, gap))
 
     center_x = clamp_x(caret.center().x() - width // 2)
     below_y = caret.bottom() + gap + 1
