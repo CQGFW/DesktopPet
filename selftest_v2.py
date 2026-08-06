@@ -67,6 +67,25 @@ assert m._select_wechat_candidate(wechat_caret, wechat_windows) == QRect(216, 13
 assert m._select_wechat_candidate(
     wechat_caret, [("wetype_renderer.exe", QRect(216, 134, 20, 10))]) is None
 
+class FailingUser32:
+    def IsWindowVisible(self, _hwnd):
+        raise RuntimeError("callback failure")
+
+    def EnumWindows(self, callback, _lparam):
+        callback(123, 0)
+        return True
+
+
+old_configure = m._configure_input_apis
+old_user32 = m.ctypes.windll.user32
+m._configure_input_apis = lambda: True
+m.ctypes.windll.user32 = FailingUser32()
+try:
+    assert m._wechat_candidate_rect(wechat_caret) is None
+finally:
+    m._configure_input_apis = old_configure
+    m.ctypes.windll.user32 = old_user32
+
 # ---------- 输入光标跟随：Pet 状态切换与脚底锚定 ----------
 from PySide6.QtCore import QEvent, QPointF
 from PySide6.QtGui import QFocusEvent, QMouseEvent, QWheelEvent

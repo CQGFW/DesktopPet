@@ -510,20 +510,28 @@ def _wechat_candidate_rect(caret):
     if not _configure_input_apis():
         return None
     windows = []
+    callback_failed = False
     user32 = ctypes.windll.user32
 
     @WNDENUMPROC
     def collect(hwnd, _):
-        if user32.IsWindowVisible(hwnd):
-            process_name = _window_process_name(hwnd)
-            if process_name in WECHAT_IME_PROCESSES:
-                rect = _window_rect(hwnd)
-                if rect is not None:
-                    windows.append((process_name, rect))
-        return True
+        nonlocal callback_failed
+        try:
+            if user32.IsWindowVisible(hwnd):
+                process_name = _window_process_name(hwnd)
+                if process_name in WECHAT_IME_PROCESSES:
+                    rect = _window_rect(hwnd)
+                    if rect is not None:
+                        windows.append((process_name, rect))
+            return True
+        except Exception:
+            callback_failed = True
+            return False
 
     try:
         if not user32.EnumWindows(collect, 0):
+            return None
+        if callback_failed:
             return None
         return _select_wechat_candidate(caret, windows)
     except Exception:
