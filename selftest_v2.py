@@ -23,10 +23,22 @@ focus = QRect(450, 280, 220, 45)
 candidate = QRect(470, 325, 280, 80)
 pos = m._input_safe_position(caret, focus, candidate, QSize(60, 52), screen)
 pet_rect = QRect(pos, QSize(60, 52))
-assert pet_rect.top() >= candidate.bottom() + 13
 assert not pet_rect.intersects(focus)
 assert not pet_rect.intersects(candidate)
 assert screen.contains(pet_rect)
+
+wechat_screen = QRect(0, 0, 864, 316)
+wechat_caret = QRect(226, 105, 2, 22)
+wechat_candidate = QRect(216, 134, 572, 44)
+wechat_pos = m._input_safe_position(
+    wechat_caret, QRect(0, 0, 864, 316), wechat_candidate,
+    QSize(60, 52), wechat_screen)
+wechat_pet = QRect(wechat_pos, QSize(60, 52))
+wechat_avoid = wechat_candidate.adjusted(-m.INPUT_GAP, -m.INPUT_GAP,
+                                          m.INPUT_GAP, m.INPUT_GAP)
+assert not wechat_pet.intersects(wechat_avoid)
+assert wechat_pet.right() < wechat_candidate.left()
+assert abs(wechat_pet.center().y() - wechat_caret.center().y()) <= 1
 
 # 文档编辑器通常把整页暴露为焦点控件；不能因此把宠物推到页面底部。
 document_focus = QRect(10, 20, 875, 810)

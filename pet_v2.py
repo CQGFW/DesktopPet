@@ -588,6 +588,7 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
         return max(screen.top(), min(y, max_y))
 
     avoids = []
+    candidate_avoid = None
     if focus is not None and not focus.isNull() and focus.isValid():
         compact_limit = max(INPUT_COMPACT_FOCUS_MAX_H,
                             pet_size.height() + gap * 2,
@@ -597,10 +598,12 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
         if focus.contains(caret.center()) and focus.height() <= compact_limit:
             avoids.append(focus.adjusted(-gap, -gap, gap, gap))
     if candidate is not None and not candidate.isNull() and candidate.isValid():
-        avoids.append(candidate.adjusted(-gap, -gap, gap, gap))
+        candidate_avoid = candidate.adjusted(-gap, -gap, gap, gap)
+        avoids.append(candidate_avoid)
 
     center_x = clamp_x(caret.center().x() - width // 2)
     below_y = caret.bottom() + gap + 1
+    preferred_below = QRect(center_x, below_y, width, height)
     for _ in range(len(avoids) + 1):
         probe = QRect(center_x, below_y, width, height)
         hits = [rect for rect in avoids if probe.intersects(rect)]
@@ -608,12 +611,19 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
             break
         below_y = max(rect.bottom() + 1 for rect in hits)
 
-    candidates = [(center_x, below_y),
-                  (center_x, caret.top() - gap - height),
-                  (caret.left() - gap - width,
-                   caret.center().y() - height // 2),
-                  (caret.right() + gap + 1,
-                   caret.center().y() - height // 2)]
+    if candidate_avoid is not None and preferred_below.intersects(candidate_avoid):
+        side_y = caret.center().y() - height // 2
+        candidates = [(candidate.left() - gap - width, side_y),
+                      (candidate.right() + gap + 1, side_y),
+                      (center_x, candidate.bottom() + gap + 1),
+                      (center_x, caret.top() - gap - height)]
+    else:
+        candidates = [(center_x, below_y),
+                      (center_x, caret.top() - gap - height),
+                      (caret.left() - gap - width,
+                       caret.center().y() - height // 2),
+                      (caret.right() + gap + 1,
+                       caret.center().y() - height // 2)]
 
     for x, y in candidates:
         rect = QRect(clamp_x(x), y, width, height)
