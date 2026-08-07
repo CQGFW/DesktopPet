@@ -195,6 +195,8 @@ WS_CAPTION = 0x00C00000
 WS_POPUP = 0x80000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOPMOST = 0x00000008
+WS_EX_LAYERED = 0x00080000
 WECHAT_IME_PROCESSES = {
     "wetype.exe",
     "wetype_renderer.exe",
@@ -230,6 +232,8 @@ def _configure_input_apis():
             wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
         user32.EnumWindows.restype = wintypes.BOOL
         user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+        user32.EnumChildWindows.restype = wintypes.BOOL
+        user32.EnumChildWindows.argtypes = (wintypes.HWND, WNDENUMPROC, wintypes.LPARAM)
         user32.IsWindowVisible.restype = wintypes.BOOL
         user32.IsWindowVisible.argtypes = (wintypes.HWND,)
         user32.GetGUIThreadInfo.restype = wintypes.BOOL
@@ -502,7 +506,8 @@ def _is_generic_popup_style(style, exstyle):
     """Accept only borderless, non-activating top-level popup candidates."""
     return (bool(style & WS_POPUP)
             and not bool(style & (WS_CHILD | WS_CAPTION))
-            and bool(exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)))
+            and bool(exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                                | WS_EX_TOPMOST | WS_EX_LAYERED)))
 
 
 def _window_process_name(hwnd):
@@ -535,16 +540,19 @@ def _wechat_candidate_rect(caret, excluded_hwnds=()):
     if not _configure_input_apis():
         return None
     windows = []
+    seen_hwnds = set()
+    recognized_roots = []
     excluded_hwnds = {int(hwnd) for hwnd in excluded_hwnds if hwnd}
     callback_failed = False
     user32 = ctypes.windll.user32
 
-    @WNDENUMPROC
-    def collect(hwnd, _):
+    def inspect(hwnd, allow_generic):
         nonlocal callback_failed
         try:
-            if int(hwnd) in excluded_hwnds:
+            hwnd_value = int(hwnd)
+            if hwnd_value in seen_hwnds or hwnd_value in excluded_hwnds:
                 return True
+            seen_hwnds.add(hwnd_value)
             if user32.IsWindowVisible(hwnd):
                 process_name = _window_process_name(hwnd)
                 normalized_name = (process_name or "").lower()
@@ -553,7 +561,9 @@ def _wechat_candidate_rect(caret, excluded_hwnds=()):
                     rect = _window_rect(hwnd)
                     if rect is not None:
                         windows.append((process_name, rect))
-                elif normalized_name not in {"desktoppetv2.exe", ""}:
+                    if allow_generic:
+                        recognized_roots.append(hwnd)
+                elif allow_generic and normalized_name not in {"desktoppetv2.exe", ""}:
                     get_long = getattr(user32, "GetWindowLongPtrW", None)
                     if get_long is not None:
                         style = int(get_long(hwnd, GWL_STYLE))
@@ -567,9 +577,22 @@ def _wechat_candidate_rect(caret, excluded_hwnds=()):
             callback_failed = True
             return False
 
+    @WNDENUMPROC
+    def collect_root(hwnd, _):
+        return inspect(hwnd, True)
+
+    @WNDENUMPROC
+    def collect_child(hwnd, _):
+        return inspect(hwnd, False)
+
     try:
-        if not user32.EnumWindows(collect, 0):
+        if not user32.EnumWindows(collect_root, 0):
             return None
+        enum_children = getattr(user32, "EnumChildWindows", None)
+        if enum_children is not None:
+            for root in recognized_roots:
+                if not enum_children(root, collect_child, 0):
+                    return None
         if callback_failed:
             return None
         return _select_wechat_candidate(caret, windows)
