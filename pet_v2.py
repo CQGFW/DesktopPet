@@ -414,6 +414,63 @@ def _uia_input_rects():
             _com_release(pointer)
 
 
+def _uia_candidate_rect(caret):
+    """Probe UI Automation under the caret for a rendered IME candidate bar.
+
+    Newer WeType builds render the candidate UI in TextInputHost without a
+    useful top-level HWND or IMM CANDIDATEFORM.  ElementFromPoint still
+    exposes the individual candidate controls and their screen bounds.
+    """
+    client = _uia_client()
+    if not client or caret is None or caret.isNull() or not caret.isValid():
+        return None
+    try:
+        client_vtable = _com_vtable(client)
+        element_from_point = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_void_p, wintypes.POINT,
+            ctypes.POINTER(ctypes.c_void_p))(client_vtable[7])
+        candidates = []
+        x_values = (caret.left() + 2, caret.right() + 12,
+                    caret.right() + 48, caret.right() + 96,
+                    caret.right() + 180, caret.right() + 300)
+        y_values = (caret.bottom() + 4, caret.bottom() + 12,
+                    caret.bottom() + 24, caret.bottom() + 40,
+                    caret.bottom() + 60, caret.top() - 4)
+        for x in x_values:
+            for y in y_values:
+                element = ctypes.c_void_p()
+                try:
+                    point = wintypes.POINT(int(x), int(y))
+                    if (element_from_point(client, point,
+                                           ctypes.byref(element)) < 0
+                            or not element):
+                        continue
+                    bounds = UIARECT()
+                    get_bounds = ctypes.WINFUNCTYPE(
+                        ctypes.c_long, ctypes.c_void_p,
+                        ctypes.POINTER(UIARECT))(_com_vtable(element)[43])
+                    if get_bounds(element, ctypes.byref(bounds)) < 0:
+                        continue
+                    rect = QRect(round(bounds.left), round(bounds.top),
+                                 round(bounds.width), round(bounds.height))
+                    if not (80 <= rect.width() <= 1200
+                            and 24 <= rect.height() <= 180):
+                        continue
+                    dx = max(rect.left() - caret.right(),
+                             caret.left() - rect.right(), 0)
+                    dy = max(rect.top() - caret.bottom(),
+                             caret.top() - rect.bottom(), 0)
+                    if dx <= 240 and dy <= 240:
+                        candidates.append((dx * dx + dy * dy,
+                                           -rect.width(), rect))
+                finally:
+                    _com_release(element)
+        return min(candidates, key=lambda item: (item[0], item[1]))[2] \
+            if candidates else None
+    except Exception:
+        return None
+
+
 def _window_rect(hwnd):
     """Return a valid top-level/client window rectangle in screen coordinates."""
     if not hwnd or not _configure_input_apis():
@@ -630,7 +687,9 @@ def query_input_context():
         excluded_hwnds = (foreground, info.hwndFocus, info.hwndCaret)
         wechat_candidate = _wechat_candidate_rect(caret, excluded_hwnds)
         candidate = (wechat_candidate if wechat_candidate is not None
-                     else _ime_candidate_rect(ime_hwnd))
+                      else _ime_candidate_rect(ime_hwnd))
+        if candidate is None:
+            candidate = _uia_candidate_rect(caret)
         screen_obj = QApplication.screenAt(caret.center()) or QApplication.primaryScreen()
         if screen_obj is None:
             return None
