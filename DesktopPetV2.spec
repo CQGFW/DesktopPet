@@ -23,6 +23,7 @@ exe = EXE(
     a.datas,
     [],
     name='DesktopPetV2',
+    version='version_info.txt',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

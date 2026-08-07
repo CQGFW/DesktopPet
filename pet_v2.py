@@ -38,6 +38,7 @@ from PySide6.QtGui import (QPixmap, QPainter, QColor, QFont, QFontMetrics,
                            QPainterPath, QImage, QLinearGradient)
 from PySide6.QtWidgets import QApplication, QWidget, QMenu
 
+APP_VERSION = "1.3.0"
 BASE_H = 260          # 100% 缩放时的显示高度
 MIN_SCALE, MAX_SCALE = 0.25, 1.50
 ZOOM_STEP = 1.08      # 每格滚轮的平滑步进
@@ -50,6 +51,7 @@ INPUT_GAP = 12
 INPUT_COMPACT_FOCUS_MAX_H = 96
 INPUT_IME_FALLBACK_W = 420
 INPUT_IME_FALLBACK_H = 120
+INPUT_UNKNOWN_CANDIDATE_GAP = 66
 
 # 互动动画：点击时按此顺序轮流触发
 ANIM_KINDS = ("jump", "squash", "shake")
@@ -726,6 +728,10 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
 
     center_x = clamp_x(caret.center().x() - width // 2)
     below_y = caret.bottom() + gap + 1
+    if candidate_avoid is None:
+        # Modern IMEs may render candidates without exposing a usable window.
+        # Reserve their likely lane so the pet does not sit directly on it.
+        below_y = caret.bottom() + INPUT_UNKNOWN_CANDIDATE_GAP + 1
     preferred_below = QRect(center_x, below_y, width, height)
     for _ in range(len(avoids) + 1):
         probe = QRect(center_x, below_y, width, height)
@@ -747,6 +753,15 @@ def _input_safe_position(caret, focus, candidate, pet_size, screen, gap=INPUT_GA
                        caret.center().y() - height // 2),
                       (caret.right() + gap + 1,
                        caret.center().y() - height // 2)]
+
+    side_y = caret.center().y() - height // 2
+    for avoid in avoids:
+        candidates.extend([
+            (center_x, avoid.top() - height - 1),
+            (avoid.left() - width - 1, side_y),
+            (avoid.right() + 1, side_y),
+            (center_x, avoid.bottom() + 1),
+        ])
 
     for x, y in candidates:
         rect = QRect(clamp_x(x), y, width, height)

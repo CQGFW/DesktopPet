@@ -45,12 +45,23 @@ document_focus = QRect(10, 20, 875, 810)
 document_caret = QRect(142, 104, 2, 26)
 document_pos = m._input_safe_position(
     document_caret, document_focus, None, QSize(60, 52), QRect(0, 0, 906, 855))
-assert document_pos.y() == document_caret.bottom() + m.INPUT_GAP + 1
+assert document_pos.y() == document_caret.bottom() + 66 + 1
 assert abs(document_pos.x() + 30 - document_caret.center().x()) <= 1
 
-edge = m._input_safe_position(QRect(1268, 690, 2, 20), QRect(1200, 680, 79, 39), None,
+# Some modern IMEs expose neither an IMM candidate rectangle nor a usable UIA
+# element. Keep their likely candidate lane clear instead of hugging the caret.
+unknown_candidate_pos = m._input_safe_position(
+    caret, focus, None, QSize(60, 52), screen)
+unknown_candidate_pet = QRect(unknown_candidate_pos, QSize(60, 52))
+assert unknown_candidate_pet.top() == caret.bottom() + 66 + 1
+assert not unknown_candidate_pet.intersects(focus)
+
+edge_focus = QRect(1200, 680, 79, 39)
+edge = m._input_safe_position(QRect(1268, 690, 2, 20), edge_focus, None,
                               QSize(60, 52), screen)
-assert screen.contains(QRect(edge, QSize(60, 52)))
+edge_pet = QRect(edge, QSize(60, 52))
+assert screen.contains(edge_pet)
+assert not edge_pet.intersects(edge_focus)
 print("input-follow geometry: safe placement and screen clamping contract OK")
 
 # IMM CANDIDATEFORM rectangles are already screen coordinates.  Keep a
