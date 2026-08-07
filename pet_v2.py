@@ -188,6 +188,13 @@ class UIARECT(ctypes.Structure):
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+GWL_STYLE = -16
+GWL_EXSTYLE = -20
+WS_CHILD = 0x40000000
+WS_CAPTION = 0x00C00000
+WS_POPUP = 0x80000000
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
 WECHAT_IME_PROCESSES = {
     "wetype.exe",
     "wetype_renderer.exe",
@@ -475,7 +482,8 @@ def _select_wechat_candidate(caret, windows):
     nearby = []
     for process_name, rect in windows:
         normalized_name = process_name.lower()
-        if (normalized_name not in WECHAT_IME_PROCESSES
+        if (normalized_name != "__generic_popup__"
+                and normalized_name not in WECHAT_IME_PROCESSES
                 and not normalized_name.startswith("wetype_")):
             continue
         if not (80 <= rect.width() <= 1200 and 24 <= rect.height() <= 180):
@@ -485,6 +493,13 @@ def _select_wechat_candidate(caret, windows):
         if dx <= 240 and dy <= 240:
             nearby.append((dx * dx + dy * dy, -rect.width(), rect))
     return min(nearby, key=lambda item: (item[0], item[1]))[2] if nearby else None
+
+
+def _is_generic_popup_style(style, exstyle):
+    """Accept only borderless, non-activating top-level popup candidates."""
+    return (bool(style & WS_POPUP)
+            and not bool(style & (WS_CHILD | WS_CAPTION))
+            and bool(exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)))
 
 
 def _window_process_name(hwnd):
@@ -513,10 +528,11 @@ def _window_process_name(hwnd):
         kernel32.CloseHandle(handle)
 
 
-def _wechat_candidate_rect(caret):
+def _wechat_candidate_rect(caret, excluded_hwnds=()):
     if not _configure_input_apis():
         return None
     windows = []
+    excluded_hwnds = {int(hwnd) for hwnd in excluded_hwnds if hwnd}
     callback_failed = False
     user32 = ctypes.windll.user32
 
@@ -524,12 +540,25 @@ def _wechat_candidate_rect(caret):
     def collect(hwnd, _):
         nonlocal callback_failed
         try:
+            if int(hwnd) in excluded_hwnds:
+                return True
             if user32.IsWindowVisible(hwnd):
                 process_name = _window_process_name(hwnd)
-                if process_name in WECHAT_IME_PROCESSES:
+                normalized_name = (process_name or "").lower()
+                if (normalized_name in WECHAT_IME_PROCESSES
+                        or normalized_name.startswith("wetype_")):
                     rect = _window_rect(hwnd)
                     if rect is not None:
                         windows.append((process_name, rect))
+                elif normalized_name not in {"desktoppetv2.exe", ""}:
+                    get_long = getattr(user32, "GetWindowLongPtrW", None)
+                    if get_long is not None:
+                        style = int(get_long(hwnd, GWL_STYLE))
+                        exstyle = int(get_long(hwnd, GWL_EXSTYLE))
+                        if _is_generic_popup_style(style, exstyle):
+                            rect = _window_rect(hwnd)
+                            if rect is not None:
+                                windows.append(("__generic_popup__", rect))
             return True
         except Exception:
             callback_failed = True
@@ -572,6 +601,8 @@ def query_input_context():
             return None
         ime_hwnd = (info.hwndFocus or info.hwndCaret) if has_gui_info else foreground
         wechat_candidate = _wechat_candidate_rect(caret)
+        excluded_hwnds = (foreground, info.hwndFocus, info.hwndCaret)
+        wechat_candidate = _wechat_candidate_rect(caret, excluded_hwnds)
         candidate = (wechat_candidate if wechat_candidate is not None
                      else _ime_candidate_rect(ime_hwnd))
         screen_obj = QApplication.screenAt(caret.center()) or QApplication.primaryScreen()

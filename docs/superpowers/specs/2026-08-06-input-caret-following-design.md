@@ -20,7 +20,7 @@
 
 查询前台窗口所属线程的 `GUITHREADINFO`，取得 `hwndCaret` 和 `rcCaret`。通过 `ClientToScreen` 将光标矩形转换为屏幕坐标，并读取 `hwndFocus` 的窗口矩形作为输入控件避让区域。
 
-传统 IME 通过 `ImmGetContext` / `ImmGetCandidateWindow` 查询候选区域。微信输入法 2.1.1.8 的候选框由独立的 `wetype_renderer.exe` 窗口绘制，不保证通过 IMM 返回，因此补充使用 `EnumWindows` 枚举可见顶层窗口：按进程映像名识别微信输入法候选窗口，过滤无效尺寸和远离光标的窗口，并读取其屏幕矩形。所有 Win32 调用都封装为可失败查询，句柄为空、API 失败或坐标无效时返回 `None`，不让异常穿透 Qt 事件循环。
+传统 IME 通过 `ImmGetContext` / `ImmGetCandidateWindow` 查询候选区域。微信输入法 2.1.1.8 的候选框可能由 `wetype_renderer.exe`、`wetype_server.exe` 或无标题宿主弹出窗口绘制，不保证通过 IMM 返回，因此补充使用 `EnumWindows` 枚举可见顶层窗口：按 WeType 进程映像名或 `WS_POPUP` + `TOOLWINDOW/NOACTIVATE` 样式识别候选窗口，排除当前输入窗口和宠物自身，过滤无效尺寸和远离光标的窗口，并读取其屏幕矩形。所有 Win32 调用都封装为可失败查询，句柄为空、API 失败或坐标无效时返回 `None`，不让异常穿透 Qt 事件循环。
 
 ### 状态与时序
 
