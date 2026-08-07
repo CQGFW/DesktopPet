@@ -82,6 +82,8 @@ assert m._select_wechat_candidate(
 assert m._select_wechat_candidate(
     wechat_caret, [("wetype.exe", QRect(216, 134, 572, 44))]) == QRect(216, 134, 572, 44)
 assert m._select_wechat_candidate(
+    wechat_caret, [("ChsIME.exe", QRect(216, 134, 572, 44))]) == QRect(216, 134, 572, 44)
+assert m._select_wechat_candidate(
     wechat_caret, [("__generic_popup__", QRect(216, 134, 572, 44))]) == QRect(216, 134, 572, 44)
 assert m._is_generic_popup_style(m.WS_POPUP, m.WS_EX_TOOLWINDOW)
 assert not m._is_generic_popup_style(m.WS_POPUP | m.WS_CAPTION, m.WS_EX_TOOLWINDOW)

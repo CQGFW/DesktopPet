@@ -200,6 +200,9 @@ WECHAT_IME_PROCESSES = {
     "wetype_renderer.exe",
     "wetype_server.exe",
     "wetype_service.exe",
+    "chsime.exe",
+    "textinputhost.exe",
+    "ctfmon.exe",
 }
 _WINDOW_PROCESS_NAMES = {}
 
