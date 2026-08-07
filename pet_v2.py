@@ -188,7 +188,12 @@ class UIARECT(ctypes.Structure):
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-WECHAT_IME_PROCESSES = {"wetype_renderer.exe"}
+WECHAT_IME_PROCESSES = {
+    "wetype.exe",
+    "wetype_renderer.exe",
+    "wetype_server.exe",
+    "wetype_service.exe",
+}
 _WINDOW_PROCESS_NAMES = {}
 
 
@@ -469,7 +474,9 @@ def _ime_candidate_rect(hwnd):
 def _select_wechat_candidate(caret, windows):
     nearby = []
     for process_name, rect in windows:
-        if process_name.lower() not in WECHAT_IME_PROCESSES:
+        normalized_name = process_name.lower()
+        if (normalized_name not in WECHAT_IME_PROCESSES
+                and not normalized_name.startswith("wetype_")):
             continue
         if not (80 <= rect.width() <= 1200 and 24 <= rect.height() <= 180):
             continue

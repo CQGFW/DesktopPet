@@ -71,6 +71,7 @@ print("input-follow IME coordinates: screen-space contract OK")
 
 wechat_windows = [
     ("wetype_renderer.exe", QRect(216, 134, 572, 44)),
+    ("wetype_server.exe", QRect(216, 134, 572, 44)),
     ("wetype_renderer.exe", QRect(1400, 700, 500, 44)),
     ("other_overlay.exe", QRect(210, 130, 580, 50)),
 ]
@@ -78,6 +79,8 @@ wechat_caret = QRect(226, 105, 2, 22)
 assert m._select_wechat_candidate(wechat_caret, wechat_windows) == QRect(216, 134, 572, 44)
 assert m._select_wechat_candidate(
     wechat_caret, [("wetype_renderer.exe", QRect(216, 134, 20, 10))]) is None
+assert m._select_wechat_candidate(
+    wechat_caret, [("wetype.exe", QRect(216, 134, 572, 44))]) == QRect(216, 134, 572, 44)
 
 class FailingUser32:
     def IsWindowVisible(self, _hwnd):
