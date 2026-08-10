@@ -22,7 +22,11 @@ ZOOM_STEP = 1.08      # 每格滚轮的平滑步进
 # 输入光标跟随：输入时临时缩小并避开输入控件 / IME 候选区域
 INPUT_IDLE_MS = 1000
 INPUT_POLL_MS = 50
-INPUT_SCALE_FACTOR = 0.2
+# 跟随时的大小档位（右键菜单可选）。这是**绝对**缩放比例，与平时大小无关：
+# 若按平时大小的倍率算，平时调到 MIN_SCALE 时跟随会小到看不见。
+# 档位允许低于 MIN_SCALE——跟随是独立的缩放域，不受平时缩放下限约束。
+INPUT_SCALE_CHOICES = (0.20, 0.25, 0.30, 0.40)
+INPUT_SCALE_DEFAULT = 0.20
 INPUT_GAP = 12
 INPUT_COMPACT_FOCUS_MAX_H = 96
 INPUT_IME_FALLBACK_W = 420

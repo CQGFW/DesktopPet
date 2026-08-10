@@ -8,7 +8,7 @@ from desktoppet import APP_VERSION
 def test_menu_layout(pet):
     labels = [action.text() for action in pet.menu.actions() if action.text()]
     assert labels == ["DesktopPet %s" % APP_VERSION, "始终置顶", "自动走动",
-                      "键盘互动", "输入跟随", "退出"]
+                      "键盘互动", "输入跟随", "输入跟随大小", "退出"]
 
 
 def test_version_header_is_display_only(pet):
@@ -42,3 +42,48 @@ class TestTopmostToggle:
         pet.act_topmost.setChecked(True)
         qapp.processEvents()
         assert pet.isVisible()
+
+
+class TestFollowScaleSubmenu:
+    def _actions(self, pet):
+        return pet.follow_scale_menu.actions()
+
+    def test_has_one_entry_per_choice(self, pet):
+        from desktoppet import config
+        labels = [a.text() for a in self._actions(pet)]
+        assert labels == ["%d%%" % round(c * 100) for c in config.INPUT_SCALE_CHOICES]
+
+    def test_entries_are_mutually_exclusive(self, pet):
+        assert all(a.isCheckable() for a in self._actions(pet))
+        assert sum(a.isChecked() for a in self._actions(pet)) == 1
+
+    def test_current_choice_is_checked(self, pet):
+        pet._set_input_follow_scale(0.30)
+        checked = [a for a in self._actions(pet) if a.isChecked()]
+        assert len(checked) == 1 and checked[0].text() == "30%"
+        assert pet.input_follow_scale == 0.30
+
+    def test_selecting_an_entry_updates_the_pet(self, pet):
+        target = [a for a in self._actions(pet) if a.text() == "40%"][0]
+        target.trigger()
+        assert abs(pet.input_follow_scale - 0.40) < 1e-9
+
+    def test_stays_enabled_when_input_follow_is_off(self, pet):
+        """档位是独立的存储偏好，可以先设好大小再开启跟随。"""
+        pet.act_input.setChecked(False)
+        assert pet.follow_scale_menu.isEnabled()
+        assert all(a.isEnabled() for a in self._actions(pet))
+
+
+def test_submenu_survives_reading_it_back_through_the_action(pet):
+    """PySide6 的 addMenu("标题") 会把子菜单所有权交给 Python，
+    别处读一次 QAction.menu() 产生的临时包装被回收时会连带析构掉它。
+    子菜单必须显式指定父对象，由 C++ 侧持有。"""
+    import gc
+    submenus = [a.menu() for a in pet.menu.actions() if a.menu()]
+    assert submenus, "菜单里应当存在子菜单"
+    del submenus
+    gc.collect()
+    assert len(pet.follow_scale_menu.actions()) == 4
+    pet._set_input_follow_scale(0.30)        # 读回之后仍可正常切换档位
+    assert pet.input_follow_scale == 0.30

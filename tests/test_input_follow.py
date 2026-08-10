@@ -20,7 +20,8 @@ def caret(pet, monkeypatch):
 
 def assert_following(pet, caret):
     assert pet.input_follow_active
-    assert abs(pet.scale - caret["scale"] * config.INPUT_SCALE_FACTOR) < 1e-9
+    # 跟随大小是绝对档位，与进入前的平时大小无关
+    assert abs(pet.scale - pet.input_follow_scale) < 1e-9
 
 
 def assert_restored(pet, caret):
@@ -137,3 +138,41 @@ def test_every_exit_path_restores_scale_and_foot(pet, caret, exit_path):
         pet.focusOutEvent(QFocusEvent(QEvent.Type.FocusOut))
 
     assert_restored(pet, caret)
+
+
+class TestFollowScale:
+    """跟随大小是可选的绝对档位，而不是相对平时大小的倍率。"""
+
+    def test_default_choice_is_one_of_the_choices(self):
+        assert config.INPUT_SCALE_DEFAULT in config.INPUT_SCALE_CHOICES
+
+    def test_defaults_to_the_configured_choice(self, pet):
+        assert pet.input_follow_scale == config.INPUT_SCALE_DEFAULT
+
+    @pytest.mark.parametrize("choice", config.INPUT_SCALE_CHOICES)
+    def test_follow_scale_equals_the_selected_choice(self, pet, caret, choice):
+        pet._set_input_follow_scale(choice)
+        pet._input_on_key()
+        assert pet.input_follow_active
+        assert abs(pet.scale - choice) < 1e-9
+
+    @pytest.mark.parametrize("normal", [config.MIN_SCALE, 1.0, config.MAX_SCALE])
+    def test_follow_scale_is_absolute_not_relative(self, pet, caret, normal):
+        """平时大小无论调到多大多小，跟随时都是所选档位那么大。
+
+        改动前是 平时大小 x 0.2，平时调到 25% 时跟随只剩 5%（约 13px），几乎不可见。"""
+        pet._set_scale(normal)
+        pet._set_input_follow_scale(0.30)
+        pet._input_on_key()
+        assert abs(pet.scale - 0.30) < 1e-9
+
+    def test_exit_still_restores_the_normal_scale(self, pet, caret):
+        """换档位不能影响还原目标——还原的始终是进入前的平时大小。"""
+        pet._set_scale(0.75)
+        foot = (pet.x() + pet.width() // 2, pet.y() + pet.height())
+        pet._set_input_follow_scale(0.40)
+        pet._input_on_key()
+        assert abs(pet.scale - 0.40) < 1e-9
+        pet._stop_input_follow()
+        assert abs(pet.scale - 0.75) < 1e-9
+        assert (pet.x() + pet.width() // 2, pet.y() + pet.height()) == foot

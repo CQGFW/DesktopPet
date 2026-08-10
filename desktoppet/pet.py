@@ -5,7 +5,7 @@ import random
 import time
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QRect, QRectF
-from PySide6.QtGui import QPainter, QColor, QPixmap
+from PySide6.QtGui import QPainter, QColor, QPixmap, QActionGroup
 from PySide6.QtWidgets import QApplication, QWidget, QMenu
 
 from . import bubble, config, input_follow, keyboard, placement, settings, sprite, winapi
@@ -22,14 +22,16 @@ class Pet(QWidget):
         self.setMouseTracking(True)   # 无按键悬停也接收 mouseMove，用于头部跟随
 
         self.persist = persist
-        saved_flags, saved_scale = (settings.load() if persist
-                                    else (dict(settings.DEFAULTS),
-                                          settings.DEFAULT_SCALE))
+        saved_flags, saved_scale, saved_input_scale = (
+            settings.load() if persist
+            else (dict(settings.DEFAULTS), settings.DEFAULT_SCALE,
+                  config.INPUT_SCALE_DEFAULT))
 
         self.src = QPixmap(config.resource_path("cat_soft.png"))   # 高清羽化素材
         self.scale = saved_scale
         self.kb_enabled = saved_flags["keyboard"]  # 键盘互动开关（影响底部键盘区留白）
         self.input_follow_enabled = saved_flags["input_follow"]
+        self.input_follow_scale = saved_input_scale   # 跟随时的绝对缩放档位
         self.dragging = False
         self.drag_offset = QPoint()
         self._press_pos = None
@@ -85,6 +87,25 @@ class Pet(QWidget):
         self.act_input.setCheckable(True)
         self.act_input.setChecked(saved_flags["input_follow"])
         self.act_input.toggled.connect(self._set_input_follow)
+        # 跟随大小档位：始终可用——档位是独立的存储偏好，可以先设好再开跟随。
+        # 显式指定父对象后由 C++ 侧持有；若用 addMenu("标题") 让 PySide6 把所有权
+        # 交给 Python，别处读一次 QAction.menu() 产生的临时包装被回收时会连带
+        # 析构掉这个子菜单，self.follow_scale_menu 随即失效。
+        self.follow_scale_menu = QMenu("输入跟随大小", self.menu)
+        self.menu.addMenu(self.follow_scale_menu)
+        self.follow_scale_group = QActionGroup(self)
+        self.follow_scale_group.setExclusive(True)
+        self.follow_scale_actions = {}
+        for choice in config.INPUT_SCALE_CHOICES:
+            action = self.follow_scale_menu.addAction("%d%%" % round(choice * 100))
+            action.setCheckable(True)
+            action.setActionGroup(self.follow_scale_group)
+            action.setChecked(abs(choice - self.input_follow_scale) < 1e-9)
+            self.follow_scale_actions[choice] = action
+            # 只在选中时响应，否则同一次切换会连带触发被取消项的信号
+            action.triggered.connect(
+                lambda checked, value=choice: checked and
+                self._set_input_follow_scale(value))
         self.menu.addSeparator()
         self.menu.addAction("退出", QApplication.quit)
 
@@ -174,7 +195,8 @@ class Pet(QWidget):
         """立即写回偏好；退出时由 app.main 调用，也作为去抖定时器的槽。"""
         self._save_timer.stop()
         if self.persist:
-            settings.save(self._current_flags(), self._persistable_scale())
+            settings.save(self._current_flags(), self._persistable_scale(),
+                          self.input_follow_scale)
 
     # ---------- 素材缩放与窗口几何 ----------
     def _rebuild_pixmap(self):
@@ -426,6 +448,16 @@ class Pet(QWidget):
             self._stop_input_follow()
         self._schedule_save()
 
+    def _set_input_follow_scale(self, value):
+        """选择跟随大小档位。
+
+        不重新缩放当前跟随：contextMenuEvent 弹菜单前必定先 _stop_input_follow()，
+        用户不可能在跟随进行中改档位，下次输入时自然生效。"""
+        self.input_follow_scale = value
+        for choice, action in self.follow_scale_actions.items():
+            action.setChecked(choice == value)
+        self._schedule_save()
+
     def _input_follow_allowed(self):
         """输入跟随会让宠物在屏幕上大幅跳动，是最显眼的一种动效，
         因此与呼吸 / 转头 / 走动一样服从系统"减少动态效果"。"""
@@ -447,7 +479,7 @@ class Pet(QWidget):
         self.input_saved_foot = QPoint(
             self.x() + self.width() // 2, self.y() + self.height())
         self.input_follow_active = True
-        self._set_scale(self.input_saved_scale * config.INPUT_SCALE_FACTOR)
+        self._set_scale(self.input_follow_scale)
         self.input_poll_timer.start()
         self._move_to_input_context(context)
         self.input_idle_timer.start(config.INPUT_IDLE_MS)
