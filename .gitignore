@@ -16,3 +16,6 @@ cat.jpg
 cat.png
 cat_flip.png
 cat_cutout_full.png
+
+# 打包时由 DesktopPetV2.spec 依 APP_VERSION 自动生成
+version_info.txt
