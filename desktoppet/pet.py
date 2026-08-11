@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QTimer, QPoint, QRect, QRectF
 from PySide6.QtGui import QPainter, QColor, QPixmap, QActionGroup
 from PySide6.QtWidgets import QApplication, QWidget, QMenu
 
-from . import bubble, config, input_follow, keyboard, placement, settings, sprite, winapi
+from . import autostart, bubble, config, input_follow, keyboard, placement, settings, sprite, winapi
 from . import ime
 from . import APP_VERSION
 
@@ -106,6 +106,14 @@ class Pet(QWidget):
             action.triggered.connect(
                 lambda checked, value=choice: checked and
                 self._set_input_follow_scale(value))
+        self.act_autostart = self.menu.addAction("开机自动启动")
+        self.act_autostart.setCheckable(True)
+        # persist=False（测试）不碰真实注册表；弹菜单前再与注册表对账，
+        # 因为启动项也可能被任务管理器等外部工具改动
+        self.act_autostart.setChecked(persist and autostart.is_enabled())
+        self.act_autostart.toggled.connect(self._set_autostart)
+        if persist:
+            self.menu.aboutToShow.connect(self._sync_autostart)
         self.menu.addSeparator()
         self.menu.addAction("退出", QApplication.quit)
 
@@ -253,6 +261,23 @@ class Pet(QWidget):
         # 再重新显示，配合 WA_ShowWithoutActivating 避免闪烁 / 抢占前台焦点
         QTimer.singleShot(0, self.show)
         self._schedule_save()
+
+    # ---------- 开机自动启动 ----------
+    def _set_autostart(self, on):
+        """写注册表 Run 项。状态存在注册表里，不进 QSettings，无需 _schedule_save。"""
+        if not self.persist:
+            return    # 测试模式不碰真实注册表
+        if not autostart.set_enabled(on):
+            # 写失败（如注册表被策略锁定）：回退勾选，不能显示已开启却无效
+            self.act_autostart.blockSignals(True)
+            self.act_autostart.setChecked(not on)
+            self.act_autostart.blockSignals(False)
+
+    def _sync_autostart(self):
+        """弹菜单前与注册表对账：启动项可能被任务管理器等外部工具改动。"""
+        self.act_autostart.blockSignals(True)
+        self.act_autostart.setChecked(autostart.is_enabled())
+        self.act_autostart.blockSignals(False)
 
     # ---------- 自动走动 ----------
     def _walk_region(self):
