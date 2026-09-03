@@ -40,7 +40,13 @@ python pet_v2.py
 | `desktoppet/input_follow.py` | 前台插入符 / 焦点 / 候选区采集 |
 | `desktoppet/keyboard.py` | 全局键盘钩子 |
 | `desktoppet/sprite.py` | 素材分层 |
-| `desktoppet/bubble.py`、`pet.py`、`app.py` | 气泡、主窗口、入口 |
+| `desktoppet/autostart.py` | 开机自启动（注册表） |
+| `desktoppet/animation_mixin.py` | 呼吸 / 头部跟随 / 互动动画 |
+| `desktoppet/walk_mixin.py` | 自动走动状态机 |
+| `desktoppet/input_follow_mixin.py` | 输入光标跟随的窗口侧逻辑 |
+| `desktoppet/keyboard_mixin.py` | 键盘互动（脚掌拍键）绘制与响应 |
+| `desktoppet/menu_mixin.py` | 右键菜单与各开关 |
+| `desktoppet/bubble.py`、`pet.py`、`app.py` | 气泡、主窗口（组装各 Mixin）、入口 |
 
 ## 测试
 

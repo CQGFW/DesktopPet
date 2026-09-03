@@ -4,10 +4,10 @@ import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import sys
 from PySide6.QtWidgets import QApplication
-import pet as m
+from desktoppet.pet import Pet
 
 app = QApplication(sys.argv)
-p = m.Pet()
+p = Pet(persist=False)
 p.show()
 assert not p.src.isNull(), "cat_soft.png load failed"
 print("sprite:", p.src.width(), "x", p.src.height(), "| display:", p.pix.width(), "x", p.pix.height())
