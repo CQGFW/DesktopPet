@@ -23,7 +23,7 @@ def _wait_for(qapp, spy):
 def test_first_instance_acquires(qapp):
     guard = single_instance.acquire(_name())
     assert guard is not None and guard.server.isListening()
-    guard.server.close()
+    guard.release()
 
 
 def test_second_instance_is_refused_and_wakes_the_first(qapp):
@@ -33,16 +33,28 @@ def test_second_instance_is_refused_and_wakes_the_first(qapp):
     assert single_instance.acquire(name) is None
     _wait_for(qapp, spy)
     assert spy.count() == 1
-    guard.server.close()
+    guard.release()
 
 
 def test_stale_socket_name_is_reclaimed(qapp):
     name = _name()
     first = single_instance.acquire(name)
-    first.server.close()          # 模拟异常退出：服务端消失但名字可能残留
+    first.release()               # 模拟退出：互斥体与服务端都释放
     second = single_instance.acquire(name)
     assert second is not None and second.server.isListening()
-    second.server.close()
+    second.release()
+
+
+def test_mutex_alone_blocks_a_second_instance_even_without_a_listener(qapp, monkeypatch):
+    """两实例同时启动、持有者尚未监听时，第二个也必须退出（Windows 命名管道
+    允许重复监听，不能靠 listen 失败来判定）。"""
+    name = _name()
+    monkeypatch.setattr(single_instance, "NOTIFY_RETRIES", 1)
+    monkeypatch.setattr(single_instance, "NOTIFY_RETRY_DELAY_S", 0)
+    first = single_instance.acquire(name)
+    first.server.close()          # 只保留互斥体，模拟"还没来得及监听"
+    assert single_instance.acquire(name) is None
+    first.release()
 
 
 def test_main_exits_immediately_when_another_instance_runs(qapp):
@@ -52,7 +64,7 @@ def test_main_exits_immediately_when_another_instance_runs(qapp):
     assert appmod.main([], instance_name=name) == 0
     _wait_for(qapp, spy)
     assert spy.count() == 1
-    guard.server.close()
+    guard.release()
 
 
 def test_wake_up_shows_and_greets(pet):

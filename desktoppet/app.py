@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """程序入口：组装 QApplication 与宠物窗口，并在退出时释放后台资源。"""
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -16,7 +17,12 @@ def main(argv=None, instance_name=None):
     app.setQuitOnLastWindowClosed(True)
     guard = single_instance.acquire(instance_name)
     if guard is None:
-        return 0        # 已有实例在跑，已通知它露面；本进程直接退出
+        # 已有实例在跑，已通知它露面；本进程直接退出。
+        # 打包 exe 里解释器收尾时销毁 QApplication 可能卡住（见 single_instance），
+        # 而此时没有任何需要落盘的状态，直接结束进程最稳妥。
+        if getattr(sys, "frozen", False):
+            os._exit(0)
+        return 0
     pet = Pet()
     guard.setParent(pet)
     guard.activated.connect(pet.wake_up)
