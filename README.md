@@ -51,9 +51,12 @@ python pet_v2.py
 ## 测试
 
 ```powershell
-pip install pytest
+pip install pytest ruff
+python -m ruff check desktoppet tests pet_v2.py
 python -m pytest
 ```
+
+GitHub Actions 会在每次 push / PR 时跑 lint 与测试；推送 `v*` 标签时额外用 PyInstaller 构建 exe 并自动挂到对应 Release（标签必须与 `APP_VERSION` 一致）。
 
 ## 排查问题
 

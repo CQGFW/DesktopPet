@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install PySide6 pytest ruff
+      - run: python -m ruff check desktoppet tests pet_v2.py
+      - run: python -m pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+  build:
+    # 只在打 v* 标签时构建 exe 并挂到 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install PySide6 pyinstaller
+      - run: python -m PyInstaller DesktopPetV2.spec
+      - name: 校验标签与 APP_VERSION 一致
+        shell: pwsh
+        run: |
+          $v = python -c "from desktoppet import APP_VERSION; print(APP_VERSION)"
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} != APP_VERSION $v" }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DesktopPetV2.exe
+          generate_release_notes: true

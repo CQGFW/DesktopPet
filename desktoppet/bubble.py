@@ -60,9 +60,13 @@ class Bubble(QWidget):
         # 小尾巴三角
         tx = self.tail_x * w
         if self.tail_down:
-            path.moveTo(tx - 8, body.bottom()); path.lineTo(tx, h); path.lineTo(tx + 8, body.bottom())
+            path.moveTo(tx - 8, body.bottom())
+            path.lineTo(tx, h)
+            path.lineTo(tx + 8, body.bottom())
         else:
-            path.moveTo(tx - 8, body.top()); path.lineTo(tx, 0); path.lineTo(tx + 8, body.top())
+            path.moveTo(tx - 8, body.top())
+            path.lineTo(tx, 0)
+            path.lineTo(tx + 8, body.top())
         path.closeSubpath()
         p.setPen(QColor(180, 150, 120))
         p.setBrush(QColor(255, 252, 245, 242))

@@ -1,0 +1,14 @@
+# 代码风格检查：只开基础规则（语法错误、未用导入/变量、明显的坏习惯），
+# 不强制重排导入或重写字符串格式，避免为工具改代码。
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "B"]
+ignore = [
+    "E501",   # 行宽由人工把握；中文注释行宽度难以精确对齐
+    "B905",   # zip(strict=) 在这里都是等长序列，不值得逐处标注
+]
+
+[lint.per-file-ignores]
+"DesktopPetV2.spec" = ["F821"]   # SPECPATH / Analysis 等由 PyInstaller 注入

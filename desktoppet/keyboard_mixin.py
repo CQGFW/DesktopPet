@@ -7,7 +7,7 @@ import time
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPainter, QColor
 
-from . import config, keyboard
+from . import keyboard
 
 
 class KeyboardMixin:
