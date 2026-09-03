@@ -76,6 +76,7 @@ IDLE_MAX_MS = 180_000
 
 # 自动走动：限定在当前屏幕可用区域的右下 1/4；匀速走向随机目标，到达后停留
 WALK_TICK_MS = 33
+WALK_TURN_MIN_PX = 4            # 目标横向距离超过该值才转身，避免垂直移动时来回翻
 WALK_SPEED = 60                 # 像素/秒
 WALK_PAUSE_MIN_MS = 2_000       # 到达目标后停留时长的随机区间
 WALK_PAUSE_MAX_MS = 6_000

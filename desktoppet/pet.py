@@ -175,6 +175,10 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if self.facing < 0:
+            # 向左走：整幅画面绕窗口中线水平镜像；键盘 / 脚掌一并镜像，位置关系不变
+            p.translate(self.width(), 0)
+            p.scale(-1, 1)
         r = self._layout()
         p.drawPixmap(r, self.body_pix, QRectF(self.body_pix.rect()))
         # 头部层：绕颈部转轴旋转后叠回身体（0° 时逐像素还原原图）
@@ -182,7 +186,7 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
         py = r.y() + r.height() * config.HEAD_PIVOT[1]
         p.save()
         p.translate(px, py)
-        p.rotate(self.head_angle)
+        p.rotate(self.head_angle * self.facing)   # 镜像坐标下取反，视觉上仍朝鼠标侧倾
         p.translate(-px, -py)
         head_rect = QRectF(r.x() + r.width() * self.head_x_frac, r.y(),
                            r.width() * (1 - self.head_x_frac),

@@ -15,7 +15,7 @@ class AnimationMixin:
     """呼吸 / 头部跟随 / 互动动画的状态与帧驱动。
 
     依赖宿主提供：self.pix（动画幅度计算）、self.update()、self.dragging、
-    self.hover_pos、self._cat_rect()、self._stop_input_follow()。"""
+    self.hover_pos、self.facing、self._cat_rect()、self._stop_input_follow()。"""
 
     def _init_animation(self):
         # 互动动画状态
@@ -58,7 +58,8 @@ class AnimationMixin:
             self.head_target = 0.0
             return
         r = self._cat_rect()
-        px = r.x() + r.width() * config.HEAD_PIVOT[0]
+        pivot_x = config.HEAD_PIVOT[0] if self.facing > 0 else 1 - config.HEAD_PIVOT[0]
+        px = r.x() + r.width() * pivot_x        # 镜像时转轴也在镜像位置
         py = r.y() + r.height() * config.HEAD_PIVOT[1]
         dx = self.hover_pos.x() - px
         dy = self.hover_pos.y() - py

@@ -23,6 +23,8 @@ class WalkMixin:
         self.walk_enabled = False
         self.walk_target = None
         self._walk_pos = None
+        # 朝向：素材默认面向右（+1）；向左走时水平镜像绘制（-1）
+        self.facing = 1
         self.walk_timer = QTimer(self)
         self.walk_timer.setInterval(config.WALK_TICK_MS)
         self.walk_timer.timeout.connect(self._walk_tick)
@@ -80,6 +82,9 @@ class WalkMixin:
             self.walk_pause_timer.stop()
             self.walk_target = None
             self._walk_pos = None
+            if self.facing != 1:      # 关闭走动后恢复素材原朝向
+                self.facing = 1
+                self.update()
         self._schedule_save()
 
     def _restart_walk_pause(self):
@@ -103,6 +108,12 @@ class WalkMixin:
         dy = self.walk_target.y() - fy
         dist = math.hypot(dx, dy)
         step = config.WALK_SPEED * config.WALK_TICK_MS / 1000.0
+        # 横向位移明显时按行进方向转身；近乎垂直的移动保持当前朝向，避免抖动
+        if abs(dx) > config.WALK_TURN_MIN_PX:
+            facing = 1 if dx > 0 else -1
+            if facing != self.facing:
+                self.facing = facing
+                self.update()
         if dist <= step:    # 到达：吸附到目标点并停留一会儿
             nx, ny = self.walk_target.x(), self.walk_target.y()
             self.walk_target = None

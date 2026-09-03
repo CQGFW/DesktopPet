@@ -138,3 +138,68 @@ def test_disabling_stops_everything(walker):
     assert not walker.walk_timer.isActive()
     assert walker.walk_target is None and walker._walk_pos is None
     assert not walker.walk_pause_timer.isActive()
+
+
+class TestFacing:
+    def _walk_towards(self, walker, x):
+        walker._set_walk(True)
+        walker.walk_target = QPoint(x, walker.y() + walker.height())
+        walker._walk_pos = None
+        walker._walk_tick()
+
+    def test_defaults_to_facing_right(self, walker):
+        assert walker.facing == 1
+
+    def test_turns_left_when_walking_left(self, walker):
+        self._walk_towards(walker, walker.x() - 400)
+        assert walker.facing == -1
+
+    def test_turns_back_right_when_walking_right(self, walker):
+        self._walk_towards(walker, walker.x() - 400)
+        self._walk_towards(walker, walker.x() + 400)
+        assert walker.facing == 1
+
+    def test_vertical_move_keeps_current_facing(self, walker):
+        self._walk_towards(walker, walker.x() - 400)
+        foot_x = walker.x() + walker.width() // 2
+        walker.walk_target = QPoint(foot_x, walker.y() + walker.height() - 50)
+        walker._walk_pos = None
+        walker._walk_tick()
+        assert walker.facing == -1
+
+    def test_disabling_walk_restores_original_facing(self, walker):
+        self._walk_towards(walker, walker.x() - 400)
+        walker._set_walk(False)
+        assert walker.facing == 1
+
+    @staticmethod
+    def _opaque_span(img):
+        """不透明像素的横向范围 (left, right)，用于判断画面是否左右翻了。"""
+        xs = [x for x in range(img.width())
+              if any(img.pixelColor(x, y).alpha() > 40 for y in range(0, img.height(), 4))]
+        return xs[0], xs[-1]
+
+    def test_mirrored_frame_renders_and_is_a_mirror_image(self, walker):
+        walker.reduced_motion = True     # 冻结呼吸，两帧几何一致
+        walker.hover_pos = None
+        walker.head_angle = 0.0
+        normal = walker.grab().toImage()
+        walker.facing = -1
+        mirrored = walker.grab().toImage()
+        assert not mirrored.isNull() and mirrored.size() == normal.size()
+        nl, nr = self._opaque_span(normal)
+        ml, mr = self._opaque_span(mirrored)
+        w = normal.width() - 1
+        assert abs(ml - (w - nr)) <= 2 and abs(mr - (w - nl)) <= 2, ((nl, nr), (ml, mr))
+        assert nl != w - nr, "sprite must be asymmetric for this test to mean anything"
+
+    def test_head_pivot_mirrors_with_the_body(self, walker):
+        """镜像后鼠标在猫头视觉右侧，仍应让头向右（正角）倾。"""
+        walker.facing = -1
+        r = walker._cat_rect()
+        walker.hover_pos = QPoint(int(r.x() + r.width() * 0.2), int(r.y() + r.height() * 0.2))
+        walker._update_head_target()
+        left_of_mirrored_pivot = walker.head_target
+        walker.hover_pos = QPoint(int(r.x() + r.width() * 0.5), int(r.y() + r.height() * 0.2))
+        walker._update_head_target()
+        assert left_of_mirrored_pivot < 0 < walker.head_target
