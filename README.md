@@ -22,7 +22,7 @@
 ## 运行
 
 ```powershell
-pip install PySide6
+pip install -r requirements.txt
 python pet_v2.py
 ```
 
@@ -56,7 +56,7 @@ python pet_v2.py
 ## 测试
 
 ```powershell
-pip install pytest ruff
+pip install -r requirements-dev.txt
 python -m ruff check desktoppet tests pet_v2.py
 python -m pytest
 ```
@@ -78,7 +78,7 @@ python pet_v2.py
 ## 打包成 exe
 
 ```powershell
-pip install pyinstaller
+pip install -r requirements-dev.txt
 python -m PyInstaller DesktopPetV2.spec
 ```
 
