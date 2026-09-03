@@ -51,7 +51,7 @@ a = Analysis(
     ['pet_v2.py'],
     pathex=[],
     binaries=[],
-    datas=[('cat_soft.png', '.')],
+    datas=[('cat_soft.png', '.'), ('quotes.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

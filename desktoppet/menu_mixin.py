@@ -2,11 +2,11 @@
 """右键菜单 Mixin：构建宠物右键菜单并处理各开关的切换。
 
 菜单状态与 QSettings 持久化联动；开机自启动项与注册表实时对账。"""
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QActionGroup
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QActionGroup, QDesktopServices
 from PySide6.QtWidgets import QMenu, QApplication
 
-from . import autostart, config
+from . import autostart, config, probe, quotes
 from . import APP_VERSION
 
 
@@ -74,7 +74,26 @@ class MenuMixin:
             self.menu.aboutToShow.connect(self._sync_autostart)
 
         self.menu.addSeparator()
+        self.menu.addAction("编辑语录…", self._edit_quotes)
+        self.menu.addAction("复制输入跟随诊断", self._copy_probe_report)
+        self.menu.addSeparator()
         self.menu.addAction("退出", QApplication.quit)
+
+    # ---------- 语录文件 ----------
+    def _edit_quotes(self):
+        """确保用户语录文件存在（首次从内置复制），再用系统默认程序打开。"""
+        path = quotes.ensure_user_file()
+        if path is None:
+            self.say("语录文件创建失败了喵……")
+            return
+        if self.persist:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        self.say("改完保存后我就会说新话啦~")
+
+    # ---------- 输入跟随诊断 ----------
+    def _copy_probe_report(self):
+        QApplication.clipboard().setText(probe.report())
+        self.say("诊断信息已复制到剪贴板~")
 
     # ---------- 置顶开关 ----------
     def _set_topmost(self, on):

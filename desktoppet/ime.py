@@ -8,7 +8,7 @@ import time
 
 from PySide6.QtCore import QRect
 
-from . import config, debuglog, placement, uia, winapi
+from . import config, debuglog, placement, probe, uia, winapi
 
 
 WECHAT_IME_PROCESSES = {
@@ -155,12 +155,32 @@ def discover_candidate(caret, ime_hwnd, excluded_hwnds):
 
     三条路径都很贵（前者要全量枚举窗口，后者要几十次跨进程 UIA 调用），
     只应经 candidate_rect 的节流缓存调用。"""
-    candidate = wechat_candidate_rect(caret, excluded_hwnds)
+    with probe.Timer() as t:
+        candidate = wechat_candidate_rect(caret, excluded_hwnds)
+    _PROBE_INFO["wechat_ms"] = t.ms
+    source = "wechat"
     if candidate is None:
-        candidate = imm_candidate_rect(ime_hwnd)
+        with probe.Timer() as t:
+            candidate = imm_candidate_rect(ime_hwnd)
+        _PROBE_INFO["imm_ms"] = t.ms
+        source = "imm"
     if candidate is None:
-        candidate = uia.candidate_rect(caret)
+        with probe.Timer() as t:
+            candidate = uia.candidate_rect(caret)
+        _PROBE_INFO["uia_cand_ms"] = t.ms
+        source = "uia"
+    _PROBE_INFO["candidate_source"] = source if candidate is not None else "none"
     return candidate
+
+
+# 最近一次候选框探测的诊断信息（路径与各段耗时），由 input_follow 汇入 probe
+_PROBE_INFO = {}
+
+
+def take_probe_info():
+    info = dict(_PROBE_INFO)
+    _PROBE_INFO.clear()
+    return info
 
 
 def candidate_rect(caret, ime_hwnd, excluded_hwnds, foreground):
@@ -177,6 +197,7 @@ def candidate_rect(caret, ime_hwnd, excluded_hwnds, foreground):
         if (now < deadline and cached_key == key
                 and abs(cached_center.x() - center.x()) <= config.INPUT_CANDIDATE_CARET_TOL
                 and abs(cached_center.y() - center.y()) <= config.INPUT_CANDIDATE_CARET_TOL):
+            _PROBE_INFO["candidate_source"] = "cache"
             return cached_rect
     rect = discover_candidate(caret, ime_hwnd, excluded_hwnds)
     _CANDIDATE_CACHE = (now + config.INPUT_CANDIDATE_TTL, key, center, rect)

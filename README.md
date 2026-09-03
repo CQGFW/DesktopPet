@@ -15,6 +15,8 @@
 - 跟随时的大小可在右键菜单「输入跟随大小」中选择（20% / 25% / 30% / 40%，为绝对比例，与平时大小无关）
 - 气泡对话框，按宠物当前所在屏幕定位，停留时长随文字长度
 - 闲置提醒：一段时间没有互动（约 1.5~3 分钟随机）时，宠物自动弹出一条随机语录
+- 语录按情境分池：点击和闲置提醒各用一池，再按当前时段（早/午/下午/晚/深夜）追加时段语录。右键菜单「编辑语录…」会在 `%APPDATA%\DesktopPet\quotes.json` 生成一份可编辑的副本，保存后立即生效，无需重启
+- 多实例保护：重复启动时不会出现第二只猫，已有的那只会露面打招呼
 - 右键菜单里的开关与缩放比例会自动保存，下次启动沿用
 
 ## 运行
@@ -32,6 +34,9 @@ python pet_v2.py
 | --- | --- |
 | `desktoppet/config.py` | 应用级常量、素材路径 |
 | `desktoppet/settings.py` | QSettings 偏好持久化 |
+| `desktoppet/quotes.py` | 语录分池加载（内置 `quotes.json` + 用户覆盖文件） |
+| `desktoppet/single_instance.py` | 多实例保护（QLocalServer） |
+| `desktoppet/probe.py` | 输入跟随探测的诊断记录与报告 |
 | `desktoppet/debuglog.py` | 可选调试日志（见下） |
 | `desktoppet/winapi.py` | Win32 ctypes 声明、窗口与进程查询 |
 | `desktoppet/uia.py` | UI Automation（COM）封装 |
@@ -60,7 +65,9 @@ GitHub Actions 会在每次 push / PR 时跑 lint 与测试；推送 `v*` 标签
 
 ## 排查问题
 
-程序对 Win32 / COM 的探测失败时会静默降级。需要定位时打开调试日志：
+输入跟随在某个应用或输入法上不听话时，先右键菜单 →「复制输入跟随诊断」，把剪贴板内容贴到 issue 里。报告包含探测次数与耗时、插入符来源（GUITHREADINFO / UIA）、候选框来源（微信 / IMM / UIA / 缓存）以及最近一次探测的前台进程和矩形。
+
+程序对 Win32 / COM 的探测失败时会静默降级。需要定位时打开调试日志（输入跟随的探测路径变化时会记录一行，路径不变时每 5 秒记一次心跳）：
 
 ```powershell
 $env:DESKTOPPET_DEBUG = "1"      # 输出到 stderr

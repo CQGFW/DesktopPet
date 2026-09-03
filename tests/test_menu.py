@@ -8,7 +8,8 @@ from desktoppet import APP_VERSION
 def test_menu_layout(pet):
     labels = [action.text() for action in pet.menu.actions() if action.text()]
     assert labels == ["DesktopPet %s" % APP_VERSION, "始终置顶", "自动走动",
-                      "键盘互动", "输入跟随", "输入跟随大小", "开机自动启动", "退出"]
+                      "键盘互动", "输入跟随", "输入跟随大小", "开机自动启动",
+                      "编辑语录…", "复制输入跟随诊断", "退出"]
 
 
 def test_version_header_is_display_only(pet):

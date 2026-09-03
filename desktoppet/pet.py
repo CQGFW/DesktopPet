@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, QPoint, QRect, QRectF, QTimer
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from . import bubble, config, settings, sprite
+from . import bubble, config, quotes, settings, sprite
 from .animation_mixin import AnimationMixin
 from .walk_mixin import WalkMixin
 from .input_follow_mixin import InputFollowMixin
@@ -225,7 +225,7 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
             # 位移很小视为点击 → 弹气泡 + 轮流触发互动动画
             if self._press_pos is not None and \
                (e.globalPosition().toPoint() - self._press_pos).manhattanLength() < 6:
-                self.say(self._pick_quote())
+                self.say(self._pick_quote("click"))
                 self.play_anim()
             self._press_pos = None
 
@@ -272,9 +272,17 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
         anchor_y = head_y - 6 if above else self.y() + self.height() + 6
         self.bubble.popup(text, anchor_x, anchor_y, above, self.screen_rect)
 
-    def _pick_quote(self):
-        """随机选一条语录，避免与上一条重复。"""
-        q = random.choice([x for x in config.QUOTES if x != self.last_quote] or config.QUOTES)
+    def wake_up(self):
+        """另一实例试图启动时被唤醒：确保可见并打个招呼。"""
+        self._stop_input_follow()
+        self.show()
+        self.raise_()
+        self.say("我已经在这里啦，别再开一只喵~")
+        self._reset_idle_timer()
+
+    def _pick_quote(self, context="idle"):
+        """按情境（click / idle）与当前时段随机选一条语录，避免与上一条重复。"""
+        q = quotes.pick(context, self.last_quote)
         self.last_quote = q
         return q
 
@@ -285,5 +293,5 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
     def _idle_chatter(self):
         """闲置到时：弹一条随机语录（拖拽中跳过），并继续计时等下一次。"""
         if not self.dragging:
-            self.say(self._pick_quote())
+            self.say(self._pick_quote("idle"))
         self._reset_idle_timer()

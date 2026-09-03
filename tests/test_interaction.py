@@ -3,7 +3,7 @@
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 
-from desktoppet import config
+from desktoppet import config, quotes
 
 
 def wheel(pet, ax, ay):
@@ -44,7 +44,7 @@ class TestIdleChatter:
     def test_pops_a_quote_and_reschedules(self, pet):
         pet.bubble.hide()
         pet._idle_chatter()
-        assert pet.bubble.isVisible() and pet.bubble.text in config.QUOTES
+        assert pet.bubble.isVisible() and pet.bubble.text in quotes.all_quotes()
         assert pet.idle_timer.isActive()
 
     def test_stays_quiet_while_dragging_but_keeps_rescheduling(self, pet):
@@ -64,5 +64,5 @@ def test_quotes_never_repeat_back_to_back(pet):
     previous = pet._pick_quote()
     for _ in range(40):
         quote = pet._pick_quote()
-        assert quote in config.QUOTES and quote != previous
+        assert quote in quotes.all_quotes() and quote != previous
         previous = quote
