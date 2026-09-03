@@ -24,7 +24,7 @@ pip install PySide6
 python pet_v2.py
 ```
 
-`pet.py` 为第一版；当前版本的实现在 `desktoppet/` 包里，`pet_v2.py` 只是启动入口。
+实现在 `desktoppet/` 包里，`pet_v2.py` 只是启动入口。（第一版单文件 `pet.py` 已从仓库移除，可在 v1.3.3 之前的历史中找到。）
 
 ## 代码结构
 
