@@ -156,6 +156,26 @@ class TestClickAnimations:
         assert abs(dy - pet.pix.height() * 0.30) < 1
         assert dx == 0 and sx == sy == 1.0
 
+    def test_jump_is_a_parabola_that_lands_where_it_started(self, pet):
+        rise = [self._offsets_at(pet, "jump", t)[1] for t in (0.0, 0.2, 0.4, 0.5)]
+        assert rise[0] == 0 and rise[1] < rise[2] < rise[3]
+        assert self._offsets_at(pet, "jump", 1.0)[1] == 0
+
+    def test_jump_fits_inside_the_top_padding(self, pet):
+        peak = self._offsets_at(pet, "jump", 0.5)[1]
+        assert peak + 6 <= pet.top_pad + 3
+
+    def test_squash_rebound_overshoots_slightly_then_settles(self, pet):
+        overshoot = max(self._offsets_at(pet, "squash", t / 100)[3]
+                        for t in range(36, 100))
+        assert 1.0 < overshoot < 1.06
+        assert abs(self._offsets_at(pet, "squash", 1.0)[3] - 1.0) < 0.01
+
+    def test_shake_amplitude_decays(self, pet):
+        first = max(abs(self._offsets_at(pet, "shake", t / 100)[0]) for t in range(0, 34))
+        last = max(abs(self._offsets_at(pet, "shake", t / 100)[0]) for t in range(67, 101))
+        assert first > last * 3
+
     def test_squash_widens_while_flattening(self, pet):
         _, _, sx, sy = self._offsets_at(pet, "squash", 0.35)
         assert abs(sy - 0.62) < 0.01 and abs(sx - 1.228) < 0.01
