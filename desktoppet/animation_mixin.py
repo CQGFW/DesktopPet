@@ -8,20 +8,31 @@ import time
 
 from PySide6.QtCore import QTimer
 
-from . import config, winapi
+from . import config, fling, winapi
+
+
+def _squash_curve(t, peak):
+    """压扁 → 带过冲的回弹：t < peak 压下去（0 → 1），之后指数衰减的余弦振荡回到 0。"""
+    if t < peak:
+        return math.sin(t / peak * math.pi / 2)
+    u = (t - peak) / (1 - peak)
+    return math.exp(-4 * u) * math.cos(u * 1.5 * math.pi)
 
 
 class AnimationMixin:
     """呼吸 / 头部跟随 / 互动动画的状态与帧驱动。
 
     依赖宿主提供：self.pix（动画幅度计算）、self.update()、self.dragging、
-    self.hover_pos、self.facing、self._cat_rect()、self._stop_input_follow()。"""
+    self.hover_pos、self.facing、self._cat_rect()、self._stop_input_follow()、
+    self._stop_fling()。"""
 
     def _init_animation(self):
-        # 互动动画状态
+        # 互动动画状态；anim_side / anim_amp 仅撞击动画使用：撞的是哪面墙、压扁幅度
         self.anim_kind = None
         self.anim_t = 0.0
         self.anim_index = 0
+        self.anim_side = fling.BOTTOM
+        self.anim_amp = config.ANIM_IMPACT_AMP[0]
         self.anim_timer = QTimer(self)
         self.anim_timer.setInterval(config.ANIM_TICK_MS)
         self.anim_timer.timeout.connect(self._anim_tick)
@@ -92,6 +103,7 @@ class AnimationMixin:
                 self.anim_kind = None
                 self.anim_timer.stop()
                 self._stop_input_follow()   # 跟随属于动效，一并退出并还原
+                self._stop_fling()          # 飞行途中开启：原地停下
             else:
                 self.t0 = time.monotonic()   # 呼吸从静止相位平滑起步
             self.update()
@@ -103,6 +115,18 @@ class AnimationMixin:
             return
         self.anim_kind = config.ANIM_KINDS[self.anim_index % len(config.ANIM_KINDS)]
         self.anim_index += 1
+        self.anim_t = 0.0
+        self.anim_timer.start()
+
+    def play_impact(self, side, strength):
+        """抛掷撞墙：朝 side（fling.LEFT / RIGHT / TOP / BOTTOM）压扁再回弹，
+        幅度按 strength（0 ~ 1）在 ANIM_IMPACT_AMP 区间插值；不进入点击轮换。"""
+        if self.reduced_motion:
+            return
+        lo, hi = config.ANIM_IMPACT_AMP
+        self.anim_kind = "impact"
+        self.anim_side = side
+        self.anim_amp = lo + (hi - lo) * max(0.0, min(1.0, strength))
         self.anim_t = 0.0
         self.anim_timer.start()
 
@@ -120,14 +144,28 @@ class AnimationMixin:
             # 抛物线：t=0.5 时到达最高点
             return 0.0, self.pix.height() * 0.30 * 4 * t * (1 - t), 1.0, 1.0
         if k == "squash":
-            if t < 0.35:            # 压下去
-                sy = 1 - 0.38 * math.sin(t / 0.35 * math.pi / 2)
-            else:                   # 弹回来，带轻微过冲
-                u = (t - 0.35) / 0.65
-                sy = 1 - 0.38 * math.exp(-4 * u) * math.cos(u * 1.5 * math.pi)
-            return 0.0, 0.0, 1 + (1 - sy) * 0.6, sy   # 压扁时变宽，近似保体积
+            # 0.35 处压到底，然后弹回来，带轻微过冲；压扁时变宽，近似保体积
+            sy = 1 - 0.38 * _squash_curve(t, 0.35)
+            return 0.0, 0.0, 1 + (1 - sy) * 0.6, sy
+        if k == "impact":
+            return self._impact_offsets(t)
         if k == "shake":
             # 衰减正弦：3 个来回，幅度递减
             amp = self.pix.width() * 0.055
             return amp * math.exp(-3 * t) * math.sin(t * 6 * math.pi), 0.0, 1.0, 1.0
         return 0.0, 0.0, 1.0, 1.0
+
+    def _impact_offsets(self, t):
+        """撞墙形变：沿撞击方向压扁（0.2 处到底，比点击压扁更快），另一方向反向
+        变宽 / 变高近似保体积；撞墙侧的边缘钉住不动，让形变看起来是被墙挤出来的。"""
+        s = 1 - self.anim_amp * _squash_curve(t, 0.2)   # 受压方向缩放
+        g = 1 + (1 - s) * 0.6                            # 另一方向的补偿
+        side = self.anim_side
+        if side in (fling.LEFT, fling.RIGHT):
+            # _layout 以窗口中线对称放置，靠水平偏移把撞墙侧边缘钉住；
+            # 镜像绘制时画布 x 反向，偏移随 facing 取反后视觉位置才正确
+            dx = self.pix.width() * (1 - s) / 2 * (1 if side == fling.RIGHT else -1)
+            return dx * self.facing, 0.0, s, g
+        # 撞顶：用抬升量把头顶钉在天花板上（过冲拉长阶段仍以脚底为锚，留白有限）
+        dy = self.pix.height() * max(0.0, 1 - s) if side == fling.TOP else 0.0
+        return 0.0, dy, g, s

@@ -42,5 +42,6 @@ def pet(qapp):
     widget.idle_timer.stop()
     widget.frame_timer.stop()
     widget.rm_timer.stop()
+    widget.fling_timer.stop()
     widget.bubble.hide()
     widget.hide()

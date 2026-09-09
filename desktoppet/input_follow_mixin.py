@@ -12,8 +12,8 @@ class InputFollowMixin:
 
     依赖宿主提供：self.scale、self.input_follow_enabled、self.input_follow_scale、
     self.reduced_motion、self._set_scale()、self._apply_geometry()、
-    self.update()、self.size()、self.move()、self.x()、self.y()、
-    self.width()、self.height()。"""
+    self._stop_fling()、self.update()、self.size()、self.move()、self.x()、
+    self.y()、self.width()、self.height()。"""
 
     def _init_input_follow(self):
         # 输入跟随：保存进入前的缩放 / 脚底位置，短周期刷新跨进程光标。
@@ -67,6 +67,7 @@ class InputFollowMixin:
         context = input_follow.query_input_context()
         if context is None:
             return
+        self._stop_fling()   # 飞行中被输入接住：先停在当前位置，再记锚点
         self.input_saved_scale = self.scale
         self.input_saved_foot = QPoint(
             self.x() + self.width() // 2, self.y() + self.height())

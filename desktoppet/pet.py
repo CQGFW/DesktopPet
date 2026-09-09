@@ -4,6 +4,7 @@
 功能拆分到各 Mixin：
 - AnimationMixin: 呼吸 / 头部跟随 / 互动动画
 - WalkMixin: 自动走动
+- FlingMixin: 惯性抛掷与屏幕内回弹
 - InputFollowMixin: 输入光标跟随
 - KeyboardMixin: 键盘互动（脚掌拍键）
 - MenuMixin: 右键菜单与开关
@@ -18,12 +19,14 @@ from PySide6.QtWidgets import QApplication, QWidget
 from . import bubble, config, quotes, settings, sprite
 from .animation_mixin import AnimationMixin
 from .walk_mixin import WalkMixin
+from .fling_mixin import FlingMixin
 from .input_follow_mixin import InputFollowMixin
 from .keyboard_mixin import KeyboardMixin
 from .menu_mixin import MenuMixin
 
 
-class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin, QWidget):
+class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, FlingMixin, WalkMixin,
+          AnimationMixin, QWidget):
     def __init__(self, persist=True):
         """persist=False 时不读写 QSettings，一律使用默认偏好（供测试使用）。"""
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
@@ -69,6 +72,7 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
         self._init_input_follow()
         self._init_keyboard()
         self._init_walk()
+        self._init_fling()
 
         # 闲置提醒：超时无互动自动弹语录；任何互动（含悬停）重置计时
         self.idle_timer = QTimer(self)
@@ -145,11 +149,13 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
         foot_y = self.y() + self.height()
         self._rebuild_pixmap()
         self._apply_geometry(foot_x, foot_y)
-        # 窗口尺寸变了：走动目标重新收进区域，浮点脚底下一帧从实际几何重建
+        # 窗口尺寸变了：走动目标重新收进区域，浮点脚底下一帧从实际几何重建；
+        # 飞行中则重算碰撞边界
         if self.walk_target is not None:
             fx, fy = self._clamp_foot(self.walk_target.x(), self.walk_target.y())
             self.walk_target = QPoint(fx, fy)
         self._walk_pos = None
+        self._fling_refresh_geometry()
 
     def _set_scale(self, new_scale):
         self.scale = new_scale
@@ -201,22 +207,27 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
 
     # ---------- 互动事件 ----------
     def mousePressEvent(self, e):
+        self._stop_fling()          # 飞行中被抓住：立即停在当前帧，无缝切入拖拽
         self._stop_input_follow()
         self._reset_idle_timer()
         if e.button() == Qt.LeftButton:
             self.dragging = True
             self._press_pos = e.globalPosition().toPoint()
             self.drag_offset = self._press_pos - self.pos()
+            self._fling_begin_drag(self._press_pos)
 
     def mouseMoveEvent(self, e):
         self._reset_idle_timer()
         self.hover_pos = e.position().toPoint()
         if self.dragging:
-            self.move(e.globalPosition().toPoint() - self.drag_offset)
+            pos = e.globalPosition().toPoint()
+            self.move(pos - self.drag_offset)
+            self._fling_track(pos)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
             self.dragging = False
+            pos = e.globalPosition().toPoint()
             # 拖拽可能把宠物拖去别的屏幕 / 区域外：丢弃旧目标，停留后按当前屏幕重选
             if self.walk_enabled:
                 self.walk_target = None
@@ -224,15 +235,19 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
                 self._restart_walk_pause()
             # 位移很小视为点击 → 弹气泡 + 轮流触发互动动画
             if self._press_pos is not None and \
-               (e.globalPosition().toPoint() - self._press_pos).manhattanLength() < 6:
+               (pos - self._press_pos).manhattanLength() < 6:
                 self.say(self._pick_quote("click"))
                 self.play_anim()
+            else:
+                # 甩出去：松手速度够快则沿拖动方向飞出，在屏幕内回弹
+                self._fling_release(pos)
             self._press_pos = None
 
     def leaveEvent(self, _):
         self.hover_pos = None   # 头部由 _frame 平滑回正
 
     def contextMenuEvent(self, e):
+        self._stop_fling()
         self._stop_input_follow()
         self._reset_idle_timer()
         self.menu.exec(e.globalPos())
@@ -243,6 +258,7 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
 
     # ---------- 滚轮缩放：脚底位置不动 ----------
     def wheelEvent(self, e):
+        self._stop_fling()
         self._stop_input_follow()
         self._reset_idle_timer()
         dy = e.angleDelta().y()
@@ -274,6 +290,7 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
 
     def wake_up(self):
         """另一实例试图启动时被唤醒：确保可见并打个招呼。"""
+        self._stop_fling()          # 气泡按当前位置定位，飞行中先停下
         self._stop_input_follow()
         self.show()
         self.raise_()
@@ -291,7 +308,7 @@ class Pet(MenuMixin, KeyboardMixin, InputFollowMixin, WalkMixin, AnimationMixin,
         self.idle_timer.start(random.randint(config.IDLE_MIN_MS, config.IDLE_MAX_MS))
 
     def _idle_chatter(self):
-        """闲置到时：弹一条随机语录（拖拽中跳过），并继续计时等下一次。"""
-        if not self.dragging:
+        """闲置到时：弹一条随机语录（拖拽 / 飞行中跳过），并继续计时等下一次。"""
+        if not self.dragging and not self.fling_active:
             self.say(self._pick_quote("idle"))
         self._reset_idle_timer()

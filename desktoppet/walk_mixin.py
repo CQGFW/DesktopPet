@@ -14,8 +14,9 @@ class WalkMixin:
     """自动走动的状态机与帧步进。
 
     依赖宿主提供：self.dragging、self.reduced_motion、self.input_follow_active、
-    self.menu、self.bubble、self._current_screen_rect()、self.width()、
-    self.height()、self.move()、self.x()、self.y()、self._schedule_save()。"""
+    self.fling_active、self.menu、self.bubble、self._current_screen_rect()、
+    self.width()、self.height()、self.move()、self.x()、self.y()、
+    self._schedule_save()。"""
 
     def _init_walk(self):
         # 自动走动状态：目标点为脚底中心的屏幕坐标，None 表示正在停留；
@@ -55,9 +56,11 @@ class WalkMixin:
         return max(lo_x, min(fx, hi_x)), max(lo_y, min(fy, hi_y))
 
     def _walk_paused(self):
-        """走动的临时暂停条件：拖拽 / 右键菜单打开 / 气泡显示中 / 减少动态效果 / 输入跟随。"""
-        return (self.dragging or self.reduced_motion or self.input_follow_active
-                or self.menu.isVisible() or self.bubble.isVisible())
+        """走动的临时暂停条件：拖拽 / 抛掷飞行中 / 右键菜单打开 / 气泡显示中 /
+        减少动态效果 / 输入跟随。"""
+        return (self.dragging or self.fling_active or self.reduced_motion
+                or self.input_follow_active or self.menu.isVisible()
+                or self.bubble.isVisible())
 
     def _pick_walk_target(self):
         """在合法区间内均匀随机选下一个脚底目标点（不经 clamp，避免边缘聚集）。"""

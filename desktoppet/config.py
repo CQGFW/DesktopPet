@@ -35,10 +35,11 @@ INPUT_UNKNOWN_CANDIDATE_GAP = 66
 INPUT_CANDIDATE_TTL = 0.2         # 候选框探测结果的复用时长（秒）
 INPUT_CANDIDATE_CARET_TOL = 24    # 光标移动超过此距离时立即重新探测
 
-# 互动动画：点击时按此顺序轮流触发
+# 互动动画：点击时按此顺序轮流触发；impact 不在轮换里，由抛掷撞墙触发
 ANIM_KINDS = ("jump", "squash", "shake")
-ANIM_DUR = {"jump": 620, "squash": 520, "shake": 700}   # 毫秒
+ANIM_DUR = {"jump": 620, "squash": 520, "shake": 700, "impact": 380}   # 毫秒
 ANIM_TICK_MS = 15
+ANIM_IMPACT_AMP = (0.15, 0.35)  # 撞击压扁幅度区间，按撞击速度插值
 
 FRAME_MS = 33         # 呼吸 / 头部跟随的动画帧间隔（约 30fps）
 
@@ -80,3 +81,22 @@ WALK_TURN_MIN_PX = 4            # 目标横向距离超过该值才转身，避�
 WALK_SPEED = 60                 # 像素/秒
 WALK_PAUSE_MIN_MS = 2_000       # 到达目标后停留时长的随机区间
 WALK_PAUSE_MAX_MS = 6_000
+
+# 惯性抛掷：快速拖拽后松手，宠物沿拖动方向飞出，在当前屏幕内碰壁回弹并逐渐停下。
+# 速度单位均为 像素/秒，加速度为 像素/秒²，阻尼系数为 1/秒（v *= exp(-μ·dt)）。
+FLING_SAMPLE_WINDOW_MS = 120    # 释放速度 = 最近这段时间内的平均速度
+FLING_HOLD_MS = 80              # 松手前停顿超过此时长视为「放下」，不抛掷
+FLING_MIN_SPEED = 500           # 触发抛掷的最低释放速度
+FLING_MAX_SPEED = 3000          # 初速度上限，避免一帧飞出视野
+FLING_TICK_MS = 16              # 物理积分帧间隔（约 60fps）
+FLING_FRICTION = 0.8            # 空气阻尼：1 秒后剩约 45% 速度
+FLING_GROUND_FRICTION = 2.5     # 贴地滑行的额外阻尼
+FLING_GRAVITY = 600             # 向下重力加速度，让宠物自然落回底部
+FLING_RESTITUTION_X = 0.75      # 撞左右墙的弹性恢复系数
+FLING_RESTITUTION_Y = 0.70      # 撞顶 / 撞底的弹性恢复系数
+FLING_BOUNCE_MIN_SPEED = 60     # 撞底速度低于此值不再弹起（弹起已不足 2px），直接贴地
+FLING_STOP_SPEED = 30           # 贴地且速度低于此值即停止
+FLING_MAX_DURATION_MS = 10_000  # 单次飞行时限，超时强制停止
+FLING_TURN_MIN_SPEED = 40       # 水平速度超过此值才按方向翻转朝向，避免低速抖动
+FLING_IMPACT_MIN_SPEED = 200    # 撞击速度超过此值才播放压扁动画
+FLING_IMPACT_FULL_SPEED = 1500  # 撞击速度达到此值时压扁幅度取上限
